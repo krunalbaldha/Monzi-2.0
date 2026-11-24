@@ -386,11 +386,12 @@ export default function AccountsPage() {
 
         {/* --- EDIT BALANCE MODAL --- */}
         {isEditModalOpen && selectedAccount && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-fade-in">
-            <div className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl space-y-4">
-              <div className="flex items-center justify-between">
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-md p-4 flex items-center justify-center min-h-screen animate-fade-in">
+            <div className="fixed inset-0 -z-10" onClick={() => setIsEditModalOpen(false)} aria-hidden="true" />
+            <div className="bg-white rounded-2xl sm:rounded-3xl p-6 max-w-sm w-full shadow-2xl space-y-4 border border-slate-100 my-auto text-left animate-slide-up">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <h3 className="text-sm font-bold text-slate-900">Update Balance</h3>
-                <button onClick={() => setIsEditModalOpen(false)} className="p-1 text-slate-400 hover:text-slate-600">
+                <button onClick={() => setIsEditModalOpen(false)} className="p-1 text-slate-400 hover:text-slate-600 rounded-full">
                   <X className="w-4 h-4" />
                 </button>
               </div>
@@ -408,7 +409,7 @@ export default function AccountsPage() {
                     required
                     value={newBalance}
                     onChange={(e) => setNewBalance(e.target.value)}
-                    className="w-full pl-8 pr-4 py-2.5 text-base font-mono font-bold rounded-xl bg-slate-50 border border-slate-200 focus:bg-white text-slate-900"
+                    className="w-full pl-8 pr-4 py-2.5 text-base font-mono font-bold rounded-xl bg-slate-50 border border-slate-200 focus:bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                     autoFocus
                   />
                 </div>
@@ -424,7 +425,7 @@ export default function AccountsPage() {
                   <button
                     type="button"
                     onClick={() => setIsEditModalOpen(false)}
-                    className="px-3 py-2.5 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold"
+                    className="px-3 py-2.5 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold hover:bg-slate-200"
                   >
                     Cancel
                   </button>
@@ -436,13 +437,14 @@ export default function AccountsPage() {
 
         {/* --- DELETE CONFIRMATION MODAL --- */}
         {confirmDeleteId && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-fade-in">
-            <div className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl space-y-3">
-              <div className="flex items-center gap-2 text-rose-600 font-bold text-sm">
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-md p-4 flex items-center justify-center min-h-screen animate-fade-in">
+            <div className="fixed inset-0 -z-10" onClick={() => setConfirmDeleteId(null)} aria-hidden="true" />
+            <div className="bg-white rounded-2xl sm:rounded-3xl p-6 max-w-sm w-full shadow-2xl space-y-3 border border-slate-100 my-auto text-left animate-slide-up">
+              <div className="flex items-center gap-2 text-rose-600 font-bold text-sm pb-1 border-b border-slate-100">
                 <AlertTriangle className="w-5 h-5" />
                 <span>Delete Account?</span>
               </div>
-              <p className="text-xs text-slate-600">
+              <p className="text-xs text-slate-600 leading-relaxed">
                 Are you sure you want to delete this account? Any associated transactions linked to this account will remain in your transaction history.
               </p>
               <div className="flex gap-2 pt-2">
@@ -455,7 +457,7 @@ export default function AccountsPage() {
                 </button>
                 <button
                   onClick={() => setConfirmDeleteId(null)}
-                  className="px-3 py-2.5 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold"
+                  className="px-3 py-2.5 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold hover:bg-slate-200"
                 >
                   Cancel
                 </button>

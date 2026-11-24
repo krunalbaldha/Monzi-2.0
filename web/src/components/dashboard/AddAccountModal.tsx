@@ -1,8 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { X, CreditCard, ShieldCheck } from 'lucide-react';
-import { GlassCard } from '@/components/ui/GlassCard';
+import React, { useState, useEffect } from 'react';
+import { X, CreditCard } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
 
 interface AddAccountModalProps {
@@ -18,6 +17,17 @@ export function AddAccountModal({ isOpen, onClose, onSuccess }: AddAccountModalP
   const [initialBalance, setInitialBalance] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const toast = useToast();
+
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -69,16 +79,13 @@ export function AddAccountModal({ isOpen, onClose, onSuccess }: AddAccountModalP
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/40 backdrop-blur-sm animate-fade-in">
-      <div className="absolute inset-0" onClick={onClose} />
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-md p-3 sm:p-6 flex items-center justify-center min-h-screen animate-fade-in">
+      {/* Click backdrop to dismiss */}
+      <div className="fixed inset-0 -z-10" onClick={onClose} aria-hidden="true" />
 
-      <div className="relative w-full max-w-md bg-white rounded-t-[28px] sm:rounded-3xl p-5 sm:p-7 shadow-2xl z-10 animate-slide-up max-h-[92vh] overflow-y-auto">
-        {/* iOS Pull Handle Bar */}
-        <div className="w-full flex justify-center pt-1 pb-3 sm:hidden">
-          <div className="w-10 h-1 rounded-full bg-slate-300" />
-        </div>
-
-        <div className="flex items-center justify-between mb-4">
+      {/* Solid White Modal Dialog Box */}
+      <div className="relative w-full max-w-md bg-white rounded-2xl sm:rounded-3xl p-6 sm:p-7 shadow-2xl border border-slate-100 my-auto text-left animate-slide-up">
+        <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
             <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
               <CreditCard className="w-5 h-5" />
@@ -91,6 +98,7 @@ export function AddAccountModal({ isOpen, onClose, onSuccess }: AddAccountModalP
           <button
             onClick={onClose}
             className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all"
+            aria-label="Close modal"
           >
             <X className="w-5 h-5" />
           </button>

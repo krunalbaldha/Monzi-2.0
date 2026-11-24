@@ -1,8 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { X, Plus, Wallet, ArrowDownLeft, ArrowUpRight, Calendar, Tag, FileText } from 'lucide-react';
-import { GlassCard } from '@/components/ui/GlassCard';
+import { X, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
 import { Account, Category } from '@/lib/types';
 import { useToast } from '@/components/ui/Toast';
 
@@ -28,6 +27,9 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
 
   useEffect(() => {
     if (isOpen) {
+      // Prevent body scrolling while modal is open
+      document.body.style.overflow = 'hidden';
+
       // Fetch accounts and categories for select dropdowns
       Promise.all([
         fetch('/api/accounts').then((r) => r.json()),
@@ -48,7 +50,13 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
           }
         })
         .catch((err) => console.error('Failed to load accounts/categories', err));
+    } else {
+      document.body.style.overflow = '';
     }
+
+    return () => {
+      document.body.style.overflow = '';
+    };
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -99,16 +107,14 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/40 backdrop-blur-sm animate-fade-in">
-      <div className="absolute inset-0" onClick={onClose} />
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-md p-3 sm:p-6 flex items-center justify-center min-h-screen animate-fade-in">
+      {/* Click backdrop to dismiss */}
+      <div className="fixed inset-0 -z-10" onClick={onClose} aria-hidden="true" />
 
-      <div className="relative w-full max-w-lg bg-white rounded-t-[28px] sm:rounded-3xl p-5 sm:p-7 shadow-2xl z-10 max-h-[92vh] overflow-y-auto animate-slide-up">
-        {/* iOS Pull Handle Bar */}
-        <div className="w-full flex justify-center pt-1 pb-3 sm:hidden">
-          <div className="w-10 h-1 rounded-full bg-slate-300" />
-        </div>
-
-        <div className="flex items-center justify-between mb-4">
+      {/* Solid White Modal Dialog Box */}
+      <div className="relative w-full max-w-lg bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-7 shadow-2xl border border-slate-100 my-auto text-left animate-slide-up">
+        {/* Modal Header */}
+        <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
           <div>
             <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">Record Transaction</h3>
             <p className="text-[11px] sm:text-xs text-slate-500 font-medium">
@@ -117,7 +123,8 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all"
+            className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all active:scale-95"
+            aria-label="Close modal"
           >
             <X className="w-5 h-5" />
           </button>
@@ -125,11 +132,11 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Direction Switcher (Expense / Income) */}
-          <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-2xl text-xs font-semibold">
+          <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl text-xs font-semibold">
             <button
               type="button"
               onClick={() => setDirection('DEBIT')}
-              className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl transition-all ${
+              className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg transition-all ${
                 direction === 'DEBIT'
                   ? 'bg-rose-600 text-white shadow-sm'
                   : 'text-slate-600 hover:text-slate-900'
@@ -141,7 +148,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
             <button
               type="button"
               onClick={() => setDirection('CREDIT')}
-              className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl transition-all ${
+              className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg transition-all ${
                 direction === 'CREDIT'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'text-slate-600 hover:text-slate-900'
@@ -169,7 +176,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
                 placeholder="0.00"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                className="w-full pl-8 pr-4 py-3 text-base sm:text-lg font-mono font-bold rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900"
+                className="w-full pl-8 pr-4 py-2.5 sm:py-3 text-base sm:text-lg font-mono font-bold rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900"
                 autoFocus
               />
             </div>
@@ -186,7 +193,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
               placeholder={direction === 'DEBIT' ? 'e.g. Swiggy, Uber, Amazon, Grocery' : 'e.g. Salary, Client Payout'}
               value={merchant}
               onChange={(e) => setMerchant(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-xs sm:text-sm rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
+              className="w-full px-3.5 py-2 sm:py-2.5 text-xs sm:text-sm rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
             />
           </div>
 
@@ -199,7 +206,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
               <select
                 value={accountId}
                 onChange={(e) => setAccountId(e.target.value)}
-                className="w-full px-3 py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
+                className="w-full px-3 py-2 sm:py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
               >
                 <option value="">No Account Linked</option>
                 {accounts.map((acc) => (
@@ -217,7 +224,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
               <select
                 value={categoryId}
                 onChange={(e) => setCategoryId(e.target.value)}
-                className="w-full px-3 py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
+                className="w-full px-3 py-2 sm:py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
               >
                 <option value="">Uncategorized</option>
                 {categories.map((cat) => (
@@ -238,7 +245,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
               <select
                 value={paymentMode}
                 onChange={(e) => setPaymentMode(e.target.value)}
-                className="w-full px-3 py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
+                className="w-full px-3 py-2 sm:py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
               >
                 <option value="UPI">UPI</option>
                 <option value="CREDIT_CARD">Credit Card</option>
@@ -257,7 +264,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
                 type="datetime-local"
                 value={transactionDate}
                 onChange={(e) => setTransactionDate(e.target.value)}
-                className="w-full px-3 py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
+                className="w-full px-3 py-2 sm:py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
               />
             </div>
           </div>
@@ -272,7 +279,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
               placeholder="e.g. Dinner with team, monthly utility bill"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
+              className="w-full px-3.5 py-2 sm:py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-900 font-medium"
             />
           </div>
 
@@ -280,7 +287,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full py-3.5 mt-2 rounded-xl text-xs sm:text-sm font-semibold bg-blue-600 text-white shadow-lg shadow-blue-500/25 hover:bg-blue-700 transition-all active:scale-98 disabled:opacity-50"
+            className="w-full py-3 sm:py-3.5 mt-2 rounded-xl text-xs sm:text-sm font-semibold bg-blue-600 text-white shadow-lg shadow-blue-500/25 hover:bg-blue-700 transition-all active:scale-98 disabled:opacity-50"
           >
             {isSubmitting ? 'Saving to Database...' : 'Save Transaction'}
           </button>

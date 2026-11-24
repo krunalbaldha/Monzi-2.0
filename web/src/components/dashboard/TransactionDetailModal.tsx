@@ -7,7 +7,6 @@ import {
   ArrowDownLeft, 
   Copy, 
   Check, 
-  Calendar, 
   CreditCard, 
   Hash, 
   ShieldCheck, 
@@ -46,6 +45,7 @@ export function TransactionDetailModal({
 
   useEffect(() => {
     if (transaction) {
+      document.body.style.overflow = 'hidden';
       setSelectedCategoryId(transaction.category_id || '');
       setEditedNotes(transaction.notes || '');
       setEditedMerchant(transaction.merchant || '');
@@ -59,7 +59,13 @@ export function TransactionDetailModal({
           if (data.categories) setCategories(data.categories);
         })
         .catch((e) => console.error(e));
+    } else {
+      document.body.style.overflow = '';
     }
+
+    return () => {
+      document.body.style.overflow = '';
+    };
   }, [transaction]);
 
   if (!transaction) return null;
@@ -145,19 +151,14 @@ export function TransactionDetailModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-fade-in p-0 sm:p-4">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-md p-3 sm:p-6 flex items-center justify-center min-h-screen animate-fade-in">
       {/* Background click to dismiss */}
-      <div className="absolute inset-0" onClick={onClose} />
+      <div className="fixed inset-0 -z-10" onClick={onClose} aria-hidden="true" />
 
-      {/* Slide-up Container on Mobile, Centered Modal on Desktop */}
-      <div className="relative w-full max-w-lg bg-white rounded-t-[28px] sm:rounded-3xl shadow-2xl overflow-hidden z-10 animate-slide-up max-h-[92vh] flex flex-col">
-        {/* iOS Pull Handle Bar */}
-        <div className="w-full flex justify-center pt-3 pb-1 sm:hidden">
-          <div className="w-10 h-1 rounded-full bg-slate-300" />
-        </div>
-
+      {/* Solid White Modal Container */}
+      <div className="relative w-full max-w-lg bg-white rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-100 my-auto text-left overflow-hidden animate-slide-up flex flex-col">
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 pt-3 sm:pt-6 pb-2">
+        <div className="flex items-center justify-between px-6 pt-5 pb-2">
           <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">
             Transaction Details
           </span>
@@ -174,6 +175,7 @@ export function TransactionDetailModal({
             <button
               onClick={onClose}
               className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all active:scale-90"
+              aria-label="Close modal"
             >
               <X className="w-5 h-5" />
             </button>
@@ -181,7 +183,7 @@ export function TransactionDetailModal({
         </div>
 
         {/* Amount & Merchant Hero Section */}
-        <div className="px-6 py-4 text-center border-b border-slate-100 bg-slate-50/50">
+        <div className="px-6 py-4 text-center border-b border-slate-100 bg-slate-50/70">
           <div
             className={`w-14 h-14 rounded-2xl mx-auto mb-3 flex items-center justify-center shadow-sm ${
               isCredit
@@ -226,7 +228,7 @@ export function TransactionDetailModal({
         </div>
 
         {/* Detailed Metadata Grid */}
-        <div className="p-6 space-y-3.5 overflow-y-auto flex-1 text-xs">
+        <div className="p-6 space-y-3.5 overflow-y-auto max-h-[50vh] text-xs">
           {/* Category Selector when editing */}
           {isEditing ? (
             <div className="p-3.5 rounded-xl bg-blue-50/60 border border-blue-200 space-y-2">
