@@ -279,7 +279,7 @@ export default function AccountsPage() {
                         •••• •••• •••• {maskDigits}
                       </p>
                       <p className="text-[10px] uppercase font-bold tracking-wider opacity-60">
-                        KRUNAL BALDHA
+                        {acc.bank_name.toUpperCase()} ACCOUNT
                       </p>
                     </div>
 

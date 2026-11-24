@@ -1,5 +1,5 @@
 import React from 'react';
-import { Wallet, TrendingUp, TrendingDown, PiggyBank, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { Wallet, TrendingUp, TrendingDown, PiggyBank, ArrowUpRight, ArrowDownRight, Minus } from 'lucide-react';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { FinancialSummary } from '@/lib/types';
 
@@ -15,6 +15,9 @@ export function SummaryCards({ summary }: SummaryCardsProps) {
       maximumFractionDigits: 0,
     }).format(val);
   };
+
+  const incomeGrowth = summary.income_change_pct || 0;
+  const expenseGrowth = summary.expense_change_pct || 0;
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-5">
@@ -50,9 +53,24 @@ export function SummaryCards({ summary }: SummaryCardsProps) {
         <div className="text-base sm:text-2xl font-bold tracking-tight text-emerald-600 font-mono">
           {formatInr(summary.monthly_income)}
         </div>
-        <div className="mt-1.5 sm:mt-2 flex items-center gap-1 text-[10px] sm:text-xs text-emerald-700 font-medium">
-          <ArrowUpRight className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
-          <span className="truncate">+8.5% growth</span>
+        <div className="mt-1.5 sm:mt-2 flex items-center gap-1 text-[10px] sm:text-xs font-medium">
+          {incomeGrowth !== 0 ? (
+            <>
+              {incomeGrowth > 0 ? (
+                <ArrowUpRight className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-600 shrink-0" />
+              ) : (
+                <ArrowDownRight className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-rose-600 shrink-0" />
+              )}
+              <span className={incomeGrowth > 0 ? 'text-emerald-700' : 'text-rose-700'}>
+                {incomeGrowth > 0 ? `+${incomeGrowth}%` : `${incomeGrowth}%`} vs last month
+              </span>
+            </>
+          ) : (
+            <>
+              <Minus className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-slate-400 shrink-0" />
+              <span className="text-slate-400">Current cycle</span>
+            </>
+          )}
         </div>
       </GlassCard>
 
@@ -69,9 +87,24 @@ export function SummaryCards({ summary }: SummaryCardsProps) {
         <div className="text-base sm:text-2xl font-bold tracking-tight text-rose-600 font-mono">
           {formatInr(summary.monthly_expense)}
         </div>
-        <div className="mt-1.5 sm:mt-2 flex items-center gap-1 text-[10px] sm:text-xs text-emerald-700 font-medium">
-          <ArrowDownRight className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
-          <span className="truncate">-4.2% lower</span>
+        <div className="mt-1.5 sm:mt-2 flex items-center gap-1 text-[10px] sm:text-xs font-medium">
+          {expenseGrowth !== 0 ? (
+            <>
+              {expenseGrowth > 0 ? (
+                <ArrowUpRight className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-rose-600 shrink-0" />
+              ) : (
+                <ArrowDownRight className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-600 shrink-0" />
+              )}
+              <span className={expenseGrowth > 0 ? 'text-rose-700' : 'text-emerald-700'}>
+                {expenseGrowth > 0 ? `+${expenseGrowth}%` : `${expenseGrowth}%`} vs last month
+              </span>
+            </>
+          ) : (
+            <>
+              <Minus className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-slate-400 shrink-0" />
+              <span className="text-slate-400">Current cycle</span>
+            </>
+          )}
         </div>
       </GlassCard>
 
@@ -90,7 +123,9 @@ export function SummaryCards({ summary }: SummaryCardsProps) {
         </div>
         <div className="mt-1.5 sm:mt-2 flex items-center justify-between text-[10px] sm:text-xs font-semibold">
           <span className="text-indigo-600 truncate">{summary.savings_rate}% Rate</span>
-          <span className="text-slate-400 font-normal hidden sm:inline">Target: 60%</span>
+          <span className="text-slate-400 font-normal hidden sm:inline">
+            {summary.monthly_income > 0 ? 'of total income' : 'No income recorded'}
+          </span>
         </div>
       </GlassCard>
     </div>

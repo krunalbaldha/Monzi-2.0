@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useState } from 'react';
-import { RefreshCw, Plus, Sparkles, Download, Check } from 'lucide-react';
+import { RefreshCw, Plus, Sparkles, Download, MessageSquare } from 'lucide-react';
 import { AddTransactionModal } from '@/components/dashboard/AddTransactionModal';
 import { usePwa } from '@/components/pwa/PwaProvider';
+import { useSms } from '@/components/sms/SmsProvider';
 
 interface HeaderProps {
   onRefresh?: () => void;
@@ -13,6 +14,7 @@ interface HeaderProps {
 export function Header({ onRefresh, isRefreshing }: HeaderProps) {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const { isInstallable, isInstalled, isIos, triggerInstall } = usePwa();
+  const { openSyncModal, isListening, permissionState } = useSms();
 
   const todayFormatted = new Intl.DateTimeFormat('en-IN', {
     weekday: 'short',
@@ -51,9 +53,24 @@ export function Header({ onRefresh, isRefreshing }: HeaderProps) {
             title="Install Monzi as a standalone native-feeling App"
           >
             <Download className="w-3.5 h-3.5 text-indigo-600" />
-            <span>Install App</span>
+            <span className="hidden sm:inline">Install App</span>
+            <span className="sm:hidden">Install</span>
           </button>
         )}
+
+        {/* Bank SMS Sync Action Button */}
+        <button
+          onClick={openSyncModal}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 md:px-3 md:py-2 rounded-xl text-xs font-semibold bg-emerald-50 border border-emerald-200/80 text-emerald-800 hover:bg-emerald-100 transition-all active:scale-95 shadow-sm"
+          title="Sync or paste bank notification SMS"
+        >
+          <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
+          <span className="hidden sm:inline">Sync SMS</span>
+          <span className="sm:hidden">SMS</span>
+          {permissionState === 'granted' && (
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          )}
+        </button>
 
         {/* Quick Manual Add Button */}
         <button

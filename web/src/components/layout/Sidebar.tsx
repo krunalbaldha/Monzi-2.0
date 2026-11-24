@@ -10,10 +10,11 @@ import {
   PieChart, 
   Settings, 
   Sparkles,
-  Smartphone,
+  MessageSquare,
   CheckCircle2
 } from 'lucide-react';
 import { clsx } from 'clsx';
+import { useSms } from '@/components/sms/SmsProvider';
 
 const navItems = [
   { name: 'Overview', href: '/', icon: LayoutDashboard },
@@ -25,9 +26,10 @@ const navItems = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { isListening, openSyncModal, permissionState } = useSms();
 
   return (
-    <aside className="hidden md:flex flex-col fixed left-0 top-0 bottom-0 w-64 bg-white/70 backdrop-blur-glass border-r border-slate-200/60 z-30 p-6 shadow-sm">
+    <aside className="hidden md:flex flex-col fixed left-0 top-0 bottom-0 w-64 bg-white/80 backdrop-blur-glass border-r border-slate-200/60 z-30 p-6 shadow-sm">
       {/* Brand Header */}
       <div className="flex items-center gap-3 mb-10 px-2">
         <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-violet-500 flex items-center justify-center shadow-md shadow-blue-500/20 text-white">
@@ -67,22 +69,32 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Integration Status Card */}
-      <div className="mt-auto p-4 rounded-2xl bg-gradient-to-b from-blue-50/80 to-indigo-50/50 border border-blue-100/70">
+      {/* Interactive SMS Sync Card */}
+      <div 
+        onClick={openSyncModal}
+        className="mt-auto p-4 rounded-2xl bg-gradient-to-b from-blue-50/80 to-indigo-50/50 border border-blue-100/70 cursor-pointer hover:border-blue-300 transition-all active:scale-[0.98]"
+        title="Open SMS Reader & Sync Center"
+      >
         <div className="flex items-center gap-2 mb-1.5">
-          <Smartphone className="w-4 h-4 text-blue-600" />
-          <span className="text-xs font-semibold text-slate-900">Android Sync</span>
+          <MessageSquare className="w-4 h-4 text-blue-600" />
+          <span className="text-xs font-semibold text-slate-900">Bank SMS Sync</span>
           <span className="flex h-2 w-2 relative ml-auto">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+              isListening || permissionState === 'granted' ? 'bg-emerald-400' : 'bg-blue-400'
+            }`} />
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${
+              isListening || permissionState === 'granted' ? 'bg-emerald-500' : 'bg-blue-500'
+            }`} />
           </span>
         </div>
         <p className="text-[11px] text-slate-600 leading-relaxed">
-          Zero manual entry. Financial transactions synced from SMS.
+          {permissionState === 'granted' 
+            ? 'Automatic bank notifications extraction active.'
+            : 'Click to grant permission or sync SMS messages.'}
         </p>
         <div className="mt-2.5 flex items-center gap-1.5 text-[11px] font-medium text-emerald-700">
           <CheckCircle2 className="w-3.5 h-3.5" />
-          <span>Receiver Active</span>
+          <span>{isListening ? 'WebOTP Listening' : 'Sync Reader Active'}</span>
         </div>
       </div>
     </aside>

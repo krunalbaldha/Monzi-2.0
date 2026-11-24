@@ -9,8 +9,9 @@ import { CategoryBreakdown } from '@/components/dashboard/CategoryBreakdown';
 import { RecentTransactions } from '@/components/dashboard/RecentTransactions';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { FinancialSummary, Transaction, Account } from '@/lib/types';
-import { CreditCard, Plus, ArrowRight, ShieldCheck, Sparkles } from 'lucide-react';
+import { CreditCard, Plus, ArrowRight, ShieldCheck, MessageSquare } from 'lucide-react';
 import { AddAccountModal } from '@/components/dashboard/AddAccountModal';
+import { useSms } from '@/components/sms/SmsProvider';
 
 const emptySummary: FinancialSummary = {
   total_balance: 0,
@@ -31,6 +32,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
+  const { openSyncModal } = useSms();
 
   const fetchData = useCallback(async () => {
     setIsRefreshing(true);
@@ -93,7 +95,14 @@ export default function DashboardPage() {
                 <ShieldCheck className="w-3 h-3" /> Live Synced
               </span>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2.5 sm:gap-3">
+              <button
+                onClick={openSyncModal}
+                className="flex items-center gap-1 text-xs font-bold text-emerald-600 hover:text-emerald-700 active:scale-95"
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>Sync SMS</span>
+              </button>
               <button
                 onClick={() => setIsAddAccountOpen(true)}
                 className="flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 active:scale-95"

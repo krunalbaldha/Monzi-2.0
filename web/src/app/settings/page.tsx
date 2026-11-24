@@ -16,11 +16,15 @@ import {
   RotateCcw,
   ShieldCheck,
   CheckCircle2,
-  Layers
+  MessageSquare,
+  Lock,
+  User,
+  AlertTriangle
 } from 'lucide-react';
 import { Category } from '@/lib/types';
 import { useToast } from '@/components/ui/Toast';
 import { usePwa } from '@/components/pwa/PwaProvider';
+import { useSms } from '@/components/sms/SmsProvider';
 
 export default function SettingsPage() {
   const [copiedToken, setCopiedToken] = useState(false);
@@ -33,8 +37,12 @@ export default function SettingsPage() {
   const [newCatIsIncome, setNewCatIsIncome] = useState(false);
   const [isAddingCategory, setIsAddingCategory] = useState(false);
 
+  const [userName, setUserName] = useState('Krunal Baldha');
+  const [isSavingUser, setIsSavingUser] = useState(false);
+
   const toast = useToast();
   const { isInstallable, isInstalled, isIos, triggerInstall } = usePwa();
+  const { permissionState, isListening, requestPermission, revokePermission, openSyncModal } = useSms();
   const syncSecret = process.env.NEXT_PUBLIC_MONZI_SYNC_SECRET || '';
 
   const checkHealth = async () => {
@@ -62,9 +70,22 @@ export default function SettingsPage() {
     }
   };
 
+  const fetchUserProfile = async () => {
+    try {
+      const res = await fetch('/api/user');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.profile?.name) setUserName(data.profile.name);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
     checkHealth();
     fetchCategories();
+    fetchUserProfile();
   }, []);
 
   const copyToClipboard = (text: string, isCurl = false) => {
@@ -77,6 +98,27 @@ export default function SettingsPage() {
       setCopiedToken(true);
       setTimeout(() => setCopiedToken(false), 2000);
       toast.success('Sync secret copied to clipboard');
+    }
+  };
+
+  const handleUpdateUserName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userName.trim()) return;
+
+    setIsSavingUser(true);
+    try {
+      const res = await fetch('/api/user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: userName.trim() }),
+      });
+      if (res.ok) {
+        toast.success('Profile updated');
+      }
+    } catch (e) {
+      toast.error('Failed to update profile');
+    } finally {
+      setIsSavingUser(false);
     }
   };
 
@@ -162,11 +204,85 @@ export default function SettingsPage() {
         <div>
           <h2 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">Platform Settings</h2>
           <p className="text-[11px] sm:text-xs text-slate-500 font-medium">
-            Supabase database status, companion sync credentials, category manager, and PWA controls
+            Supabase database status, SMS permissions, companion credentials, and PWA controls
           </p>
         </div>
 
-        {/* 1. Supabase Database Connection & Health */}
+        {/* 1. SMS Permission & Sync Management */}
+        <GlassCard className="p-4 sm:p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                <MessageSquare className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-slate-900">Bank SMS Sync & Permissions</h3>
+                <p className="text-[11px] sm:text-xs text-slate-500 font-medium">
+                  Control automated debit/credit SMS reading and on-device parsing
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={openSyncModal}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-sm hover:bg-blue-700 active:scale-95 transition-all"
+            >
+              <span>Sync / Test SMS</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2">
+              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
+                SMS Reading Permission
+              </span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2.5 h-2.5 rounded-full ${
+                    permissionState === 'granted' ? 'bg-emerald-500' : permissionState === 'denied' ? 'bg-rose-500' : 'bg-amber-500'
+                  }`} />
+                  <span className="text-xs font-bold text-slate-900">
+                    {permissionState === 'granted' ? 'Permission Granted' : permissionState === 'denied' ? 'Permission Denied' : 'Not Configured'}
+                  </span>
+                </div>
+
+                {permissionState === 'granted' ? (
+                  <button
+                    onClick={revokePermission}
+                    className="px-2.5 py-1 text-[11px] font-semibold text-rose-600 hover:bg-rose-50 rounded-lg border border-rose-200"
+                  >
+                    Revoke
+                  </button>
+                ) : (
+                  <button
+                    onClick={requestPermission}
+                    className="px-3 py-1 text-[11px] font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-sm"
+                  >
+                    Enable Sync
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2">
+              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
+                WebOTP Live Receiver
+              </span>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-700 font-medium">
+                  {isListening ? 'Actively Monitoring' : 'Standby / Manual Sync'}
+                </span>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                  isListening ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'
+                }`}>
+                  {isListening ? 'ACTIVE' : 'READY'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </GlassCard>
+
+        {/* 2. Supabase Database Connection & Health */}
         <GlassCard className="p-4 sm:p-6 space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -223,7 +339,7 @@ export default function SettingsPage() {
           </div>
         </GlassCard>
 
-        {/* 2. Category Management */}
+        {/* 3. Category Management */}
         <GlassCard className="p-4 sm:p-6 space-y-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
@@ -306,7 +422,7 @@ export default function SettingsPage() {
           </div>
         </GlassCard>
 
-        {/* 3. Android Companion Integration */}
+        {/* 4. Android Companion Integration */}
         <GlassCard className="p-4 sm:p-6 space-y-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
@@ -315,7 +431,7 @@ export default function SettingsPage() {
             <div>
               <h3 className="text-sm sm:text-base font-bold text-slate-900">Android Companion Setup</h3>
               <p className="text-[11px] sm:text-xs text-slate-500 font-medium">
-                Enter these credentials in your Android SMS forwarder or background daemon
+                Credentials for background SMS forwarders or automation daemons
               </p>
             </div>
           </div>
@@ -371,7 +487,7 @@ export default function SettingsPage() {
           </div>
         </GlassCard>
 
-        {/* 4. Progressive Web App (PWA) & Offline Controls */}
+        {/* 5. Progressive Web App (PWA) & Offline Controls */}
         <GlassCard className="p-4 sm:p-6 space-y-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-violet-50 text-violet-600 flex items-center justify-center shrink-0">

@@ -109,14 +109,14 @@ export async function GET() {
     const netSavings = monthlyIncome - monthlyExpense;
     const savingsRate = monthlyIncome > 0 ? (netSavings / monthlyIncome) * 100 : 0;
 
-    // Calculate growth percentages
+    // Calculate growth percentages (0 if no baseline previous month)
     const incomeChangePct = prevMonthlyIncome > 0
       ? Math.round(((monthlyIncome - prevMonthlyIncome) / prevMonthlyIncome) * 1000) / 10
-      : monthlyIncome > 0 ? 100 : 0;
+      : 0;
 
     const expenseChangePct = prevMonthlyExpense > 0
       ? Math.round(((monthlyExpense - prevMonthlyExpense) / prevMonthlyExpense) * 1000) / 10
-      : monthlyExpense > 0 ? 100 : 0;
+      : 0;
 
     // Sort cash flow by date
     const sortedCashFlow = Object.keys(monthlyMap)

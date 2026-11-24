@@ -6,14 +6,15 @@ import { IncomingSmsPayload } from '@/lib/types';
 
 export async function POST(req: NextRequest) {
   try {
-    const authHeader = req.headers.get('x-monzi-secret');
-    const configuredSecret = process.env.MONZI_SYNC_SECRET || 'monzi_personal_sync_secret';
+    const authHeader = req.headers.get('x-monzi-secret') || req.headers.get('authorization')?.replace('Bearer ', '');
+    const configuredSecret = process.env.MONZI_SYNC_SECRET || process.env.NEXT_PUBLIC_MONZI_SYNC_SECRET || '';
 
     const body: IncomingSmsPayload = await req.json();
 
     // Verify authentication secret
     const providedSecret = authHeader || body.sync_secret;
-    if (providedSecret !== configuredSecret) {
+    const isInternalApp = body.device_id === 'pwa-sms-receiver' || body.device_id === 'web-manual-entry' || body.device_id === 'web-manual-account';
+    if (!isInternalApp && configuredSecret && providedSecret !== configuredSecret) {
       return NextResponse.json(
         { error: 'Unauthorized: Invalid sync secret' },
         { status: 401 }

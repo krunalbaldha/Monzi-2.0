@@ -15,12 +15,14 @@ import {
   ArrowUpDown,
   CreditCard,
   Tag,
-  ArrowLeftRight
+  ArrowLeftRight,
+  MessageSquare
 } from 'lucide-react';
 import { Transaction, Account, Category } from '@/lib/types';
 import { TransactionDetailModal } from '@/components/dashboard/TransactionDetailModal';
 import { AddTransactionModal } from '@/components/dashboard/AddTransactionModal';
 import { useToast } from '@/components/ui/Toast';
+import { useSms } from '@/components/sms/SmsProvider';
 
 function TransactionsContent() {
   const searchParams = useSearchParams();
@@ -38,6 +40,7 @@ function TransactionsContent() {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const toast = useToast();
+  const { openSyncModal } = useSms();
 
   const fetchFilters = async () => {
     try {
@@ -161,6 +164,13 @@ function TransactionsContent() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={openSyncModal}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200/80 text-emerald-800 hover:bg-emerald-100 text-xs font-semibold shadow-sm active:scale-95 transition-all"
+            >
+              <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Sync SMS</span>
+            </button>
             <button
               onClick={() => setIsAddOpen(true)}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 text-xs font-semibold shadow-sm shadow-blue-500/20 active:scale-95 transition-all"
