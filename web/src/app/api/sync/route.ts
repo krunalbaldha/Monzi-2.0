@@ -7,7 +7,7 @@ import { IncomingSmsPayload } from '@/lib/types';
 export async function POST(req: NextRequest) {
   try {
     const authHeader = req.headers.get('x-monzi-secret');
-    const configuredSecret = process.env.MONZI_SYNC_SECRET || 'monzi_sync_sec_ts6_MlPJi62UEBhcgvYI6g_uI7wG_SE';
+    const configuredSecret = process.env.MONZI_SYNC_SECRET || 'monzi_personal_sync_secret';
 
     const body: IncomingSmsPayload = await req.json();
 

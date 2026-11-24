@@ -38,7 +38,7 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("monzi_prefs", Context.MODE_PRIVATE)
         etServerUrl.setText(prefs.getString("server_url", "http://10.0.2.2:3000/api/sync"))
-        etSecret.setText(prefs.getString("sync_secret", "monzi_sync_sec_ts6_MlPJi62UEBhcgvYI6g_uI7wG_SE"))
+        etSecret.setText(prefs.getString("sync_secret", "monzi_personal_sync_secret"))
 
         updatePermissionStatus()
 

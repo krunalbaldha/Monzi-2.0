@@ -7,15 +7,46 @@
   --foreground: #0F172A;
 }
 
+/* Native App Feel: Disable tap highlights, rubber-band glitching, and text selection on UI elements */
+*, *::before, *::after {
+  -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
+}
+
+html {
+  /* Support iPhone notch and dynamic island */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
   color: var(--foreground);
   background-color: var(--background);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", -apple-system-body, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  overscroll-behavior-y: none;
 }
 
-/* Subtle frosted glass ambient gradients in background */
+/* Allow text selection only in search and form inputs */
+input, textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Hide scrollbars while preserving smooth scrolling */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Soft Ambient Blobs for Glassmorphism Depth */
 .ambient-bg {
   position: fixed;
   top: 0;
@@ -34,17 +65,42 @@ body {
   width: 500px;
   height: 500px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(219, 234, 254, 0.45) 0%, rgba(248, 250, 252, 0) 70%);
+  background: radial-gradient(circle, rgba(219, 234, 254, 0.5) 0%, rgba(248, 250, 252, 0) 70%);
   filter: blur(40px);
 }
 
 .ambient-blob-2 {
   position: absolute;
   bottom: 10%;
-  left: 20%;
+  left: 15%;
   width: 450px;
   height: 450px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(243, 232, 255, 0.4) 0%, rgba(248, 250, 252, 0) 70%);
+  background: radial-gradient(circle, rgba(243, 232, 255, 0.45) 0%, rgba(248, 250, 252, 0) 70%);
   filter: blur(40px);
+}
+
+/* Native Spring Bottom Sheet Animation */
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+    opacity: 0.8;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out forwards;
 }

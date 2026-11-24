@@ -31,7 +31,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-monzi-secret': 'monzi_sync_sec_ts6_MlPJi62UEBhcgvYI6g_uI7wG_SE',
+          'x-monzi-secret': process.env.NEXT_PUBLIC_MONZI_SYNC_SECRET || 'monzi_personal_sync_secret',
         },
         body: JSON.stringify({
           device_id: 'web-manual-entry',

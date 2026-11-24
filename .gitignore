@@ -28,6 +28,7 @@ yarn-error.log*
 # Local Env Files
 .env*.local
 .env
+web/scripts/
 
 # Android
 *.iml

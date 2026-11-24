@@ -16,7 +16,7 @@ class SyncWorker(appContext: Context, workerParams: WorkerParameters) :
 
     override suspend fun doWork(): Result {
         val serverUrl = inputData.getString("server_url") ?: "http://10.0.2.2:3000/api/sync"
-        val syncSecret = inputData.getString("sync_secret") ?: "monzi_sync_sec_ts6_MlPJi62UEBhcgvYI6g_uI7wG_SE"
+        val syncSecret = inputData.getString("sync_secret") ?: "monzi_personal_sync_secret"
 
         val amount = inputData.getDouble("amount", 0.0)
         val direction = inputData.getString("direction") ?: "DEBIT"
@@ -82,7 +82,7 @@ class SyncWorker(appContext: Context, workerParams: WorkerParameters) :
         fun enqueueSync(context: Context, parsed: ParsedSms) {
             val prefs = context.getSharedPreferences("monzi_prefs", Context.MODE_PRIVATE)
             val serverUrl = prefs.getString("server_url", "http://10.0.2.2:3000/api/sync")
-            val secret = prefs.getString("sync_secret", "monzi_sync_sec_ts6_MlPJi62UEBhcgvYI6g_uI7wG_SE")
+            val secret = prefs.getString("sync_secret", "monzi_personal_sync_secret")
 
             val data = Data.Builder()
                 .putString("server_url", serverUrl)

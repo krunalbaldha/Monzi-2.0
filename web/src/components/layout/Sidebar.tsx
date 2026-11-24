@@ -27,7 +27,7 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="fixed left-0 top-0 bottom-0 w-64 bg-white/70 backdrop-blur-glass border-r border-slate-200/60 z-30 flex flex-col p-6 shadow-sm">
+    <aside className="hidden md:flex flex-col fixed left-0 top-0 bottom-0 w-64 bg-white/70 backdrop-blur-glass border-r border-slate-200/60 z-30 p-6 shadow-sm">
       {/* Brand Header */}
       <div className="flex items-center gap-3 mb-10 px-2">
         <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-violet-500 flex items-center justify-center shadow-md shadow-blue-500/20 text-white">
