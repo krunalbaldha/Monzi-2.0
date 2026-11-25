@@ -50,7 +50,7 @@ export interface Transaction {
   notes?: string;
   transaction_date: string;
   created_at: string;
-  
+
   // Joined relation fields
   accounts?: {
     bank_name: string;
@@ -64,6 +64,25 @@ export interface Transaction {
   };
 }
 
+export interface ParsedTransaction {
+  amount: number;
+  direction: 'CREDIT' | 'DEBIT';
+  bank_name: string;
+  account_mask: string;
+  merchant?: string;
+  reference_id?: string;
+  payment_mode?: string;
+  parsed_available_balance?: number;
+  transaction_type: 'EXPENSE' | 'INCOME' | 'TRANSFER' | 'CC_BILL_PAYMENT' | 'UNCLASSIFIED';
+  // Extended fields
+  transaction_category?: string; // auto-classified category name
+  is_duplicate?: boolean;
+  is_failed?: boolean;
+  is_self_transfer?: boolean;
+  is_cashback?: boolean;
+  is_refund?: boolean;
+}
+
 export interface FinancialSummary {
   total_balance: number;
   monthly_income: number;
@@ -72,6 +91,16 @@ export interface FinancialSummary {
   savings_rate: number;
   income_change_pct: number;
   expense_change_pct: number;
+}
+
+export interface DailyFinancialSummary {
+  date: string;
+  total_income: number;
+  total_expenses: number;
+  net_savings: number;
+  transaction_count: number;
+  top_category: string;
+  top_merchant: string;
 }
 
 export interface IncomingSmsPayload {

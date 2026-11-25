@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { MessageSquare, ShieldCheck, Lock, CheckCircle2, X, AlertCircle } from 'lucide-react';
+import { ShieldCheck, MessageSquareText, Check, X } from 'lucide-react';
 import { useSms } from '@/components/sms/SmsProvider';
 
 export function SmsPermissionModal() {
@@ -9,77 +9,80 @@ export function SmsPermissionModal() {
 
   if (!isPermissionModalOpen) return null;
 
+  const features = [
+    'Automatic detection',
+    'Zero manual entry',
+    '100% private',
+  ];
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-md p-4 flex items-center justify-center min-h-screen animate-fade-in">
+    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center animate-fade-in">
       <div className="fixed inset-0 -z-10" onClick={closePermissionModal} aria-hidden="true" />
 
-      <div className="relative w-full max-w-md bg-white rounded-2xl sm:rounded-3xl p-6 sm:p-7 shadow-2xl border border-slate-100 my-auto text-left animate-slide-up space-y-4">
-        {/* Header Icon & Close */}
-        <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
-              <MessageSquare className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-base font-bold text-slate-900">Bank SMS Sync Permission</h3>
-              <p className="text-[11px] text-slate-500 font-medium">Automatic expense extraction</p>
+      <div className="relative w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 sm:p-7 pb-8 sm:pb-7 shadow-2xl border border-slate-100 animate-slide-up">
+        {/* Bottom sheet drag handle (mobile) */}
+        <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-5 sm:hidden" />
+
+        {/* Close button */}
+        <button
+          onClick={closePermissionModal}
+          className="absolute top-5 right-5 p-2 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+          aria-label="Close"
+        >
+          <X className="w-5 h-5" />
+        </button>
+
+        {/* Large SMS / Shield Icon */}
+        <div className="flex flex-col items-center text-center">
+          <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/25 mb-4">
+            <MessageSquareText className="w-8 h-8" />
+            <div className="absolute -bottom-1.5 -right-1.5 w-7 h-7 rounded-full bg-emerald-500 border-2 border-white flex items-center justify-center shadow-sm">
+              <ShieldCheck className="w-4 h-4 text-white" />
             </div>
           </div>
-          <button
-            onClick={closePermissionModal}
-            className="p-1 rounded-full text-slate-400 hover:text-slate-600"
-            aria-label="Close"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
 
-        {/* Rationale Explanation */}
-        <div className="space-y-2 text-xs text-slate-600 leading-relaxed">
-          <p>
-            Monzi requires permission to read incoming bank SMS notifications so that your transactions, payment modes, and account balances are updated in real-time without tedious manual entry.
+          <h3 className="text-xl font-bold text-slate-900 tracking-tight">
+            Automatic SMS Detection
+          </h3>
+
+          <p className="text-sm text-slate-600 leading-relaxed mt-2 max-w-sm">
+            Monzi reads your bank SMS to automatically track transactions. We never store your SMS — only the extracted financial data.
           </p>
         </div>
 
-        {/* Security & Privacy Badges */}
-        <div className="space-y-2.5 pt-1">
-          <div className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-100 text-xs">
-            <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-bold text-slate-900">Zero Personal Message Access</p>
-              <p className="text-slate-500 text-[11px] mt-0.5">
-                Our parser strictly filters for financial keywords. Personal texts, WhatsApp messages, and marketing ads are ignored.
-              </p>
+        {/* 3 Feature Bullets */}
+        <div className="mt-6 space-y-2.5 bg-slate-50/80 border border-slate-100 rounded-2xl p-4">
+          {features.map((label) => (
+            <div key={label} className="flex items-center gap-3 text-sm font-medium text-slate-800">
+              <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+                <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+              </span>
+              <span>{label}</span>
             </div>
-          </div>
-
-          <div className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-100 text-xs">
-            <Lock className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-bold text-slate-900">Security OTPs Filtered Out</p>
-              <p className="text-slate-500 text-[11px] mt-0.5">
-                One-Time Passwords (OTPs) and login verification codes are discarded on-device and never saved to the database.
-              </p>
-            </div>
-          </div>
+          ))}
         </div>
 
-        {/* Actions */}
-        <div className="space-y-2 pt-2">
+        {/* Action Buttons */}
+        <div className="mt-6 space-y-3">
           <button
             onClick={grantPermission}
-            className="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold text-xs shadow-md shadow-blue-500/25 hover:bg-blue-700 active:scale-98 transition-all flex items-center justify-center gap-1.5"
+            className="w-full min-h-[48px] py-3.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-lg shadow-blue-500/25 active:scale-[0.99] transition-all"
           >
-            <CheckCircle2 className="w-4 h-4" />
-            <span>Grant Permission & Enable SMS Sync</span>
+            Enable SMS Reading
           </button>
+
           <button
             onClick={denyPermission}
-            className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold text-xs transition-all"
+            className="w-full py-2.5 text-sm font-medium text-slate-500 hover:text-slate-700 transition-colors"
           >
-            Deny / Not Now
+            Not Now
           </button>
         </div>
+
+        {/* Privacy Note */}
+        <p className="text-[11px] text-slate-400 text-center mt-4 leading-relaxed">
+          OTPs, personal conversations, and promotional texts are automatically ignored and never leave your device.
+        </p>
       </div>
     </div>
   );

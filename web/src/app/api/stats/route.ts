@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 
 export async function GET() {
+  const emptyToday = { income: 0, expenses: 0, net: 0, transaction_count: 0 };
+
   if (!isSupabaseConfigured) {
     return NextResponse.json({
       summary: {
@@ -13,6 +15,8 @@ export async function GET() {
         income_change_pct: 0,
         expense_change_pct: 0,
       },
+      today: emptyToday,
+      topMerchants: [],
       cashFlow: [],
       categoryBreakdown: [],
       source: 'supabase_not_configured',
@@ -35,7 +39,7 @@ export async function GET() {
     // 2. Fetch all transactions with joined categories
     const { data: allTxns, error: txError } = await supabase
       .from('transactions')
-      .select('amount, direction, transaction_type, is_excluded_from_totals, transaction_date, categories(id, name, color)')
+      .select('amount, direction, transaction_type, merchant, is_excluded_from_totals, transaction_date, categories(id, name, color)')
       .order('transaction_date', { ascending: true });
 
     if (txError) throw txError;
@@ -45,9 +49,11 @@ export async function GET() {
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth(); // 0-indexed
+    const currentDay = now.getDate();
 
     const currentMonthKey = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
-    
+    const todayKey = `${currentMonthKey}-${String(currentDay).padStart(2, '0')}`;
+
     // Previous month key for percentage comparison
     const prevDate = new Date(currentYear, currentMonth - 1, 1);
     const prevMonthKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
@@ -57,16 +63,22 @@ export async function GET() {
     let prevMonthlyIncome = 0;
     let prevMonthlyExpense = 0;
 
+    let todayIncome = 0;
+    let todayExpenses = 0;
+    let todayTxCount = 0;
+
     const categoryTotals: Record<string, { value: number; color: string }> = {};
     const monthlyMap: Record<string, { income: number; expense: number; sortKey: string }> = {};
+    const merchantMap: Record<string, { total: number; count: number }> = {};
 
     txList.forEach((tx: any) => {
       const amt = Number(tx.amount) || 0;
       const txDate = new Date(tx.transaction_date);
       const y = txDate.getFullYear();
       const m = txDate.getMonth();
+      const d = txDate.getDate();
       const monthKey = `${y}-${String(m + 1).padStart(2, '0')}`;
-      const monthLabel = txDate.toLocaleString('default', { month: 'short' });
+      const dayKey = `${monthKey}-${String(d).padStart(2, '0')}`;
 
       if (!monthlyMap[monthKey]) {
         monthlyMap[monthKey] = { income: 0, expense: 0, sortKey: monthKey };
@@ -81,6 +93,15 @@ export async function GET() {
         return;
       }
 
+      if (dayKey === todayKey) {
+        todayTxCount += 1;
+        if (tx.direction === 'CREDIT') {
+          todayIncome += amt;
+        } else {
+          todayExpenses += amt;
+        }
+      }
+
       if (tx.direction === 'CREDIT') {
         monthlyMap[monthKey].income += amt;
         if (monthKey === currentMonthKey) {
@@ -92,11 +113,18 @@ export async function GET() {
         monthlyMap[monthKey].expense += amt;
         if (monthKey === currentMonthKey) {
           monthlyExpense += amt;
+
+          const merchantName = (tx.merchant || 'Unknown Merchant').trim();
+          if (!merchantMap[merchantName]) {
+            merchantMap[merchantName] = { total: 0, count: 0 };
+          }
+          merchantMap[merchantName].total += amt;
+          merchantMap[merchantName].count += 1;
         } else if (monthKey === prevMonthKey) {
           prevMonthlyExpense += amt;
         }
 
-        // Category breakdown for current month (or all expenses if current month has few)
+        // Category breakdown
         const catName = tx.categories?.name || 'Uncategorized';
         const catColor = tx.categories?.color || '#94A3B8';
         if (!categoryTotals[catName]) {
@@ -141,6 +169,16 @@ export async function GET() {
       }))
       .sort((a, b) => b.value - a.value);
 
+    // Top 10 merchants by total spend this month
+    const topMerchants = Object.entries(merchantMap)
+      .map(([merchant, stats]) => ({
+        merchant,
+        total: Math.round(stats.total * 100) / 100,
+        count: stats.count,
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10);
+
     return NextResponse.json({
       summary: {
         total_balance: totalBalance,
@@ -151,6 +189,13 @@ export async function GET() {
         income_change_pct: incomeChangePct,
         expense_change_pct: expenseChangePct,
       },
+      today: {
+        income: Math.round(todayIncome * 100) / 100,
+        expenses: Math.round(todayExpenses * 100) / 100,
+        net: Math.round((todayIncome - todayExpenses) * 100) / 100,
+        transaction_count: todayTxCount,
+      },
+      topMerchants,
       cashFlow: sortedCashFlow,
       categoryBreakdown,
       source: 'supabase',
@@ -168,6 +213,8 @@ export async function GET() {
           income_change_pct: 0,
           expense_change_pct: 0,
         },
+        today: emptyToday,
+        topMerchants: [],
         cashFlow: [],
         categoryBreakdown: [],
         source: 'supabase_error',

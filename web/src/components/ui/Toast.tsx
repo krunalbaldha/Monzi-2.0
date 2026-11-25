@@ -49,30 +49,47 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     <ToastContext.Provider value={contextValue}>
       {children}
 
-      {/* Floating Toast Container */}
-      <div className="fixed top-4 right-4 left-4 sm:left-auto z-50 flex flex-col gap-2 pointer-events-none max-w-sm sm:w-80">
+      {/* Floating Glass Toast Container (respects iPhone safe-area-inset-top) */}
+      <div
+        className="fixed right-4 left-4 sm:left-auto z-50 flex flex-col gap-2.5 pointer-events-none max-w-sm sm:w-80"
+        style={{ top: 'max(env(safe-area-inset-top), 16px)' }}
+      >
         {toasts.map((t) => (
           <div
             key={t.id}
-            className={`pointer-events-auto flex items-center justify-between p-3.5 rounded-2xl shadow-xl backdrop-blur-xl border transition-all animate-slide-up text-xs font-semibold ${
+            role="status"
+            aria-live="polite"
+            className={`pointer-events-auto flex items-center justify-between px-4 py-3 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.10)] bg-white/85 backdrop-blur-2xl border transition-all animate-slide-up text-[13px] font-semibold ${
               t.type === 'success'
-                ? 'bg-white/95 border-emerald-200/80 text-emerald-950 shadow-emerald-500/10'
+                ? 'border-emerald-200/80 text-slate-900'
                 : t.type === 'error'
-                ? 'bg-white/95 border-rose-200/80 text-rose-950 shadow-rose-500/10'
-                : 'bg-white/95 border-blue-200/80 text-slate-900 shadow-blue-500/10'
+                ? 'border-rose-200/80 text-slate-900'
+                : 'border-blue-200/80 text-slate-900'
             }`}
           >
-            <div className="flex items-center gap-2.5">
-              {t.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />}
-              {t.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />}
-              {t.type === 'info' && <Info className="w-4 h-4 text-blue-600 shrink-0" />}
-              <span className="leading-snug">{t.message}</span>
+            <div className="flex items-center gap-3 min-w-0">
+              <div
+                className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 ${
+                  t.type === 'success'
+                    ? 'bg-emerald-50 text-emerald-600'
+                    : t.type === 'error'
+                    ? 'bg-rose-50 text-rose-600'
+                    : 'bg-blue-50 text-blue-600'
+                }`}
+              >
+                {t.type === 'success' && <CheckCircle2 className="w-4 h-4" />}
+                {t.type === 'error' && <AlertCircle className="w-4 h-4" />}
+                {t.type === 'info' && <Info className="w-4 h-4" />}
+              </div>
+              <span className="leading-snug break-words">{t.message}</span>
             </div>
             <button
+              type="button"
               onClick={() => removeToast(t.id)}
-              className="p-1 rounded-lg text-slate-400 hover:text-slate-600 transition-all ml-2"
+              className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100/80 transition-all ml-2 shrink-0"
+              aria-label="Dismiss notification"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="w-4 h-4" />
             </button>
           </div>
         ))}

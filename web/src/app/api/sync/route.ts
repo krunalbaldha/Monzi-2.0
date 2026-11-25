@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { generateSmsFingerprint } from '@/lib/deduplication';
-import { parseBankSms } from '@/lib/parser';
+import { parseBankSms, classifyMerchant } from '@/lib/parser';
 import { IncomingSmsPayload } from '@/lib/types';
 
 export async function POST(req: NextRequest) {
@@ -30,30 +30,74 @@ export async function POST(req: NextRequest) {
 
     let processedCount = 0;
     let duplicateCount = 0;
+    let categoriesAssigned = 0;
     const errors: Array<{ index: number; message: string }> = [];
+
+    // Pre-fetch categories from Supabase for name->id lookup
+    const categoryMap: Record<string, string> = {};
+    if (isSupabaseConfigured) {
+      const { data: cats } = await supabase.from('categories').select('id, name');
+      if (cats) {
+        for (const cat of cats) {
+          categoryMap[cat.name.toLowerCase()] = cat.id;
+        }
+      }
+    }
 
     for (let i = 0; i < body.transactions.length; i++) {
       const item = body.transactions[i];
 
-      // If raw SMS body is provided without pre-parsed fields, parse it on the fly
       let txData = { ...item };
-      if (item.raw_body && (!item.amount || !item.bank_name)) {
+      const parsedFlags = {
+        is_failed: false,
+        is_self_transfer: false,
+        transaction_category: '',
+      };
+
+      if (item.raw_body) {
         const parsed = parseBankSms(item.raw_body, item.bank_name);
-        if (!parsed) {
+        if (!parsed && (!item.amount || !item.bank_name)) {
           errors.push({ index: i, message: 'SMS could not be parsed as financial message' });
           continue;
         }
-        txData = {
-          ...txData,
-          amount: parsed.amount,
-          direction: parsed.direction,
-          bank_name: parsed.bank_name,
-          account_mask: parsed.account_mask,
-          merchant: parsed.merchant || txData.merchant,
-          reference_id: parsed.reference_id || txData.reference_id,
-          payment_mode: parsed.payment_mode || txData.payment_mode,
-          parsed_available_balance: parsed.parsed_available_balance,
-        };
+        if (parsed) {
+          if (!item.amount || !item.bank_name) {
+            txData = {
+              ...txData,
+              amount: parsed.amount,
+              direction: parsed.direction,
+              bank_name: parsed.bank_name,
+              account_mask: parsed.account_mask,
+              merchant: parsed.merchant || txData.merchant,
+              reference_id: parsed.reference_id || txData.reference_id,
+              payment_mode: parsed.payment_mode || txData.payment_mode,
+              parsed_available_balance: parsed.parsed_available_balance,
+            };
+          }
+          parsedFlags.is_failed = parsed.is_failed || false;
+          parsedFlags.is_self_transfer = parsed.is_self_transfer || false;
+          parsedFlags.transaction_category = parsed.transaction_category || '';
+        }
+      }
+
+      if (!parsedFlags.transaction_category) {
+        parsedFlags.transaction_category = classifyMerchant(txData.merchant || '', item.raw_body || '');
+      }
+
+      // Resolve category_id from name (case-insensitive)
+      let categoryId: string | null = null;
+      if (parsedFlags.transaction_category) {
+        const catKey = parsedFlags.transaction_category.toLowerCase();
+        if (categoryMap[catKey]) {
+          categoryId = categoryMap[catKey];
+          categoriesAssigned++;
+        } else {
+          const partialKey = Object.keys(categoryMap).find((k) => k.includes(catKey) || catKey.includes(k));
+          if (partialKey) {
+            categoryId = categoryMap[partialKey];
+            categoriesAssigned++;
+          }
+        }
       }
 
       // Generate deterministic fingerprint
@@ -65,10 +109,10 @@ export async function POST(req: NextRequest) {
           direction: txData.direction,
           account_mask: txData.account_mask,
           reference_id: txData.reference_id,
+          merchant: txData.merchant,
         });
 
       if (!isSupabaseConfigured) {
-        // If running in local demo/mock mode, just record success
         processedCount++;
         continue;
       }
@@ -97,7 +141,6 @@ export async function POST(req: NextRequest) {
 
         if (account) {
           accountId = account.id;
-          // Update balance if available in SMS
           if (txData.parsed_available_balance !== undefined) {
             await supabase
               .from('accounts')
@@ -108,7 +151,6 @@ export async function POST(req: NextRequest) {
               .eq('id', account.id);
           }
         } else {
-          // Auto-create account
           const { data: newAccount } = await supabase
             .from('accounts')
             .insert({
@@ -125,16 +167,27 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // 3. Insert transaction
+      // 3. Determine transaction type and exclusion
       const isCcPayment = /credit card bill|card payment/i.test(txData.merchant || '');
-      const txnType = isCcPayment
-        ? 'CC_BILL_PAYMENT'
-        : txData.direction === 'CREDIT'
-        ? 'INCOME'
-        : 'EXPENSE';
+      const isExcluded = isCcPayment || parsedFlags.is_failed || parsedFlags.is_self_transfer;
 
+      let txnType: 'EXPENSE' | 'INCOME' | 'TRANSFER' | 'CC_BILL_PAYMENT' | 'UNCLASSIFIED' = 'UNCLASSIFIED';
+      if (parsedFlags.is_failed) {
+        txnType = 'UNCLASSIFIED';
+      } else if (isCcPayment) {
+        txnType = 'CC_BILL_PAYMENT';
+      } else if (parsedFlags.is_self_transfer) {
+        txnType = 'TRANSFER';
+      } else if (txData.direction === 'CREDIT') {
+        txnType = 'INCOME';
+      } else {
+        txnType = 'EXPENSE';
+      }
+
+      // 4. Insert transaction
       const { error: insertError } = await supabase.from('transactions').insert({
         account_id: accountId,
+        category_id: categoryId,
         amount: txData.amount,
         direction: txData.direction,
         transaction_type: txnType,
@@ -143,7 +196,7 @@ export async function POST(req: NextRequest) {
         reference_id: txData.reference_id,
         sms_fingerprint: fingerprint,
         parsed_available_balance: txData.parsed_available_balance,
-        is_excluded_from_totals: isCcPayment,
+        is_excluded_from_totals: isExcluded,
         transaction_date: txData.transaction_date,
       });
 
@@ -158,6 +211,7 @@ export async function POST(req: NextRequest) {
       success: true,
       processed_count: processedCount,
       duplicate_count: duplicateCount,
+      categories_assigned: categoriesAssigned,
       errors: errors.length > 0 ? errors : undefined,
       server_timestamp: new Date().toISOString(),
     });

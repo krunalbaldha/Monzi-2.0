@@ -1,7 +1,8 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { parseBankSms, ParsedTransaction } from '@/lib/parser';
+import { parseBankSms } from '@/lib/parser';
+import type { ParsedTransaction } from '@/lib/types';
 import { useToast } from '@/components/ui/Toast';
 
 export type SmsPermissionState = 'prompt' | 'granted' | 'denied' | 'unsupported';
@@ -11,6 +12,8 @@ interface SmsContextType {
   isListening: boolean;
   isPermissionModalOpen: boolean;
   isSyncModalOpen: boolean;
+  lastSyncTime: Date | null;
+  autoSyncCount: number;
   requestPermission: () => void;
   grantPermission: () => Promise<void>;
   denyPermission: () => Promise<void>;
@@ -19,20 +22,199 @@ interface SmsContextType {
   closeSyncModal: () => void;
   closePermissionModal: () => void;
   ingestSmsText: (rawText: string) => Promise<{ success: boolean; transaction?: any; error?: string }>;
+  processSmsText: (rawSms: string, sender?: string) => Promise<ParsedTransaction | null>;
 }
 
 const SmsContext = createContext<SmsContextType | undefined>(undefined);
+
+const LAST_SYNC_STORAGE_KEY = 'monzi_last_sync';
 
 export function SmsProvider({ children }: { children: React.ReactNode }) {
   const [permissionState, setPermissionState] = useState<SmsPermissionState>('prompt');
   const [isListening, setIsListening] = useState(false);
   const [isPermissionModalOpen, setIsPermissionModalOpen] = useState(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  const [autoSyncCount, setAutoSyncCount] = useState<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const toast = useToast();
 
-  // Initialize permission state from localStorage and user profile
+  const recordSyncSuccess = useCallback((count: number = 1) => {
+    const now = new Date();
+    setLastSyncTime(now);
+    try {
+      localStorage.setItem(LAST_SYNC_STORAGE_KEY, now.toISOString());
+    } catch {
+      // Ignore localStorage quota/availability errors
+    }
+    if (count > 0) {
+      setAutoSyncCount((prev) => prev + count);
+    }
+  }, []);
+
+  const processSmsText = useCallback(
+    async (rawSms: string, sender?: string): Promise<ParsedTransaction | null> => {
+      if (!rawSms || !rawSms.trim()) return null;
+
+      const parsed = parseBankSms(rawSms, sender || '');
+      if (!parsed) return null;
+
+      try {
+        const res = await fetch('/api/sync', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-monzi-secret': process.env.NEXT_PUBLIC_MONZI_SYNC_SECRET || '',
+          },
+          body: JSON.stringify({
+            device_id: 'pwa-sms-receiver',
+            transactions: [
+              {
+                transaction_date: new Date().toISOString(),
+                amount: parsed.amount,
+                direction: parsed.direction,
+                bank_name: parsed.bank_name,
+                account_mask: parsed.account_mask,
+                merchant: parsed.merchant || 'Bank Transaction',
+                payment_mode: parsed.payment_mode || 'UPI',
+                reference_id: parsed.reference_id,
+                parsed_available_balance: parsed.parsed_available_balance,
+                raw_body: rawSms,
+              },
+            ],
+          }),
+        });
+
+        if (!res.ok) {
+          return null;
+        }
+
+        const data = await res.json();
+        const isDup = (data.duplicate_count || 0) > 0 && (data.processed_count || 0) === 0;
+        if ((data.processed_count || 0) > 0) {
+          recordSyncSuccess(data.processed_count);
+        }
+
+        return {
+          ...parsed,
+          is_duplicate: isDup,
+        };
+      } catch (err) {
+        console.error('[SmsProvider] processSmsText error:', err);
+        return null;
+      }
+    },
+    [recordSyncSuccess]
+  );
+
+  const ingestSmsText = useCallback(
+    async (rawText: string) => {
+      if (!rawText || !rawText.trim()) {
+        return { success: false, error: 'Empty SMS content' };
+      }
+
+      const parsed = parseBankSms(rawText);
+      if (!parsed) {
+        return {
+          success: false,
+          error: 'No financial transaction detected. Non-banking or OTP messages are ignored for security.',
+        };
+      }
+
+      try {
+        const res = await fetch('/api/sync', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-monzi-secret': process.env.NEXT_PUBLIC_MONZI_SYNC_SECRET || '',
+          },
+          body: JSON.stringify({
+            device_id: 'pwa-sms-receiver',
+            transactions: [
+              {
+                transaction_date: new Date().toISOString(),
+                amount: parsed.amount,
+                direction: parsed.direction,
+                bank_name: parsed.bank_name,
+                account_mask: parsed.account_mask,
+                merchant: parsed.merchant || 'Bank Transaction',
+                payment_mode: parsed.payment_mode || 'UPI',
+                reference_id: parsed.reference_id,
+                parsed_available_balance: parsed.parsed_available_balance,
+                raw_body: rawText,
+              },
+            ],
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || 'Sync ingestion failed');
+        }
+
+        const data = await res.json();
+        if ((data.processed_count || 0) > 0) {
+          recordSyncSuccess(data.processed_count);
+        }
+        return { success: true, transaction: data };
+      } catch (err: any) {
+        return { success: false, error: err.message || 'Network error syncing SMS' };
+      }
+    },
+    [recordSyncSuccess]
+  );
+
+  const stopSmsReceiver = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsListening(false);
+  }, []);
+
+  const startSmsReceiver = useCallback(() => {
+    if (typeof window === 'undefined') return;
+
+    if ('credentials' in navigator && (navigator as any).credentials?.get) {
+      setIsListening(true);
+      abortControllerRef.current = new AbortController();
+
+      (navigator.credentials as any)
+        .get({
+          otp: { transport: ['sms'] },
+          signal: abortControllerRef.current.signal,
+        })
+        .then(async (content: any) => {
+          if (content && content.code) {
+            await processSmsText(content.code);
+            startSmsReceiver();
+          }
+        })
+        .catch((err: any) => {
+          if (err.name !== 'AbortError') {
+            console.log('[WebOTP] SMS listener paused:', err.message);
+          }
+          setIsListening(false);
+        });
+    } else {
+      setIsListening(false);
+    }
+  }, [processSmsText]);
+
+  // Initialize permission state and lastSyncTime from localStorage / user profile
   useEffect(() => {
+    try {
+      const savedSync = localStorage.getItem(LAST_SYNC_STORAGE_KEY);
+      if (savedSync) {
+        const parsedDate = new Date(savedSync);
+        if (!isNaN(parsedDate.getTime())) {
+          setLastSyncTime(parsedDate);
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     const saved = localStorage.getItem('monzi_sms_permission') as SmsPermissionState | null;
     if (saved === 'granted' || saved === 'denied') {
       setPermissionState(saved);
@@ -40,7 +222,6 @@ export function SmsProvider({ children }: { children: React.ReactNode }) {
         startSmsReceiver();
       }
     } else {
-      // Check server user profile
       fetch('/api/user')
         .then((r) => r.json())
         .then((data) => {
@@ -57,49 +238,7 @@ export function SmsProvider({ children }: { children: React.ReactNode }) {
     return () => {
       stopSmsReceiver();
     };
-  }, []);
-
-  const startSmsReceiver = useCallback(() => {
-    if (typeof window === 'undefined') return;
-
-    // Check for W3C WebOTP API
-    if ('credentials' in navigator && (navigator as any).credentials?.get) {
-      setIsListening(true);
-      abortControllerRef.current = new AbortController();
-
-      // Listen for incoming SMS
-      (navigator.credentials as any)
-        .get({
-          otp: { transport: ['sms'] },
-          signal: abortControllerRef.current.signal,
-        })
-        .then(async (content: any) => {
-          if (content && content.code) {
-            // Ingest incoming message
-            await ingestSmsText(content.code);
-            // Restart listener for continuous tracking
-            startSmsReceiver();
-          }
-        })
-        .catch((err: any) => {
-          if (err.name !== 'AbortError') {
-            console.log('[WebOTP] SMS listener paused:', err.message);
-          }
-          setIsListening(false);
-        });
-    } else {
-      // Browser does not support WebOTP
-      setIsListening(false);
-    }
-  }, []);
-
-  const stopSmsReceiver = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    setIsListening(false);
-  }, []);
+  }, [startSmsReceiver, stopSmsReceiver]);
 
   const requestPermission = () => {
     setIsPermissionModalOpen(true);
@@ -110,7 +249,6 @@ export function SmsProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('monzi_sms_permission', 'granted');
     setIsPermissionModalOpen(false);
 
-    // Save to user profile
     try {
       await fetch('/api/user', {
         method: 'POST',
@@ -173,59 +311,6 @@ export function SmsProvider({ children }: { children: React.ReactNode }) {
   const closeSyncModal = () => setIsSyncModalOpen(false);
   const closePermissionModal = () => setIsPermissionModalOpen(false);
 
-  const ingestSmsText = async (rawText: string) => {
-    if (!rawText || !rawText.trim()) {
-      return { success: false, error: 'Empty SMS content' };
-    }
-
-    // 1. Run local intelligent parser
-    const parsed = parseBankSms(rawText);
-    if (!parsed) {
-      return {
-        success: false,
-        error: 'No financial transaction detected. Non-banking or OTP messages are ignored for security.',
-      };
-    }
-
-    // 2. Submit to sync endpoint
-    try {
-      const res = await fetch('/api/sync', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-monzi-secret': process.env.NEXT_PUBLIC_MONZI_SYNC_SECRET || '',
-        },
-        body: JSON.stringify({
-          device_id: 'pwa-sms-receiver',
-          transactions: [
-            {
-              transaction_date: new Date().toISOString(),
-              amount: parsed.amount,
-              direction: parsed.direction,
-              bank_name: parsed.bank_name,
-              account_mask: parsed.account_mask,
-              merchant: parsed.merchant || 'Bank Transaction',
-              payment_mode: parsed.payment_mode || 'UPI',
-              reference_id: parsed.reference_id || `SMS_${Date.now()}`,
-              parsed_available_balance: parsed.parsed_available_balance,
-              raw_body: rawText,
-            },
-          ],
-        }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Sync ingestion failed');
-      }
-
-      const data = await res.json();
-      return { success: true, transaction: data };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Network error syncing SMS' };
-    }
-  };
-
   return (
     <SmsContext.Provider
       value={{
@@ -233,6 +318,8 @@ export function SmsProvider({ children }: { children: React.ReactNode }) {
         isListening,
         isPermissionModalOpen,
         isSyncModalOpen,
+        lastSyncTime,
+        autoSyncCount,
         requestPermission,
         grantPermission,
         denyPermission,
@@ -241,6 +328,7 @@ export function SmsProvider({ children }: { children: React.ReactNode }) {
         closeSyncModal,
         closePermissionModal,
         ingestSmsText,
+        processSmsText,
       }}
     >
       {children}

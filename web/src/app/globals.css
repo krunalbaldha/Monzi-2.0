@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-  --background: #F8FAFC;
+  --background: #FFFFFF;
   --foreground: #0F172A;
 }
 
@@ -21,8 +21,9 @@ html {
 
 body {
   color: var(--foreground);
-  background-color: var(--background);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", -apple-system-body, sans-serif;
+  background: linear-gradient(160deg, #FFFFFF 0%, #F7F8FA 100%);
+  background-attachment: fixed;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   user-select: none;
@@ -32,27 +33,116 @@ body {
 }
 
 /* Allow text selection only in search and form inputs */
-input, textarea {
+input, textarea, select {
   user-select: text;
   -webkit-user-select: text;
 }
 
-/* Hide scrollbars while preserving smooth scrolling */
-.scrollbar-none::-webkit-scrollbar {
-  display: none;
-}
-.scrollbar-none {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+@layer utilities {
+  /* Hide scrollbars while preserving smooth scrolling */
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* Thin styled scrollbar for desktop panels */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.45);
+    border-radius: 999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.65);
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+  }
+
+  /* Safe Area Utility */
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
 }
 
-/* Soft Ambient Blobs for Glassmorphism Depth */
+@layer components {
+  /* Glass Card Utility */
+  .glass-card {
+    background: rgba(255, 255, 255, 0.70);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(255, 255, 255, 0.40);
+    box-shadow: 0 2px 24px rgba(0, 0, 0, 0.06);
+    border-radius: 16px;
+  }
+
+  /* Primary Blue Gradient Button */
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 10px 20px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #ffffff;
+    background: linear-gradient(135deg, #2563EB 0%, #4F46E5 100%);
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .btn-primary:hover {
+    box-shadow: 0 6px 20px rgba(37, 99, 235, 0.45);
+    transform: translateY(-1px);
+  }
+  .btn-primary:active {
+    transform: scale(0.97);
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+  }
+
+  /* Secondary White Glass Button */
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 10px 20px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #334155;
+    background: #ffffff;
+    border: 1.5px solid rgba(203, 213, 225, 0.80);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .btn-secondary:hover {
+    background: #F8FAFC;
+    border-color: #94A3B8;
+  }
+  .btn-secondary:active {
+    transform: scale(0.97);
+  }
+}
+
+/* ─── Ambient Blobs (Glassmorphism depth) ───────────────────────────────────── */
 .ambient-bg {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  top: 0; left: 0; right: 0; bottom: 0;
   z-index: -1;
   overflow: hidden;
   pointer-events: none;
@@ -60,47 +150,94 @@ input, textarea {
 
 .ambient-blob-1 {
   position: absolute;
-  top: -10%;
-  right: 10%;
-  width: 500px;
-  height: 500px;
+  top: -12%;
+  right: 4%;
+  width: 600px;
+  height: 600px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(219, 234, 254, 0.5) 0%, rgba(248, 250, 252, 0) 70%);
-  filter: blur(40px);
+  background: radial-gradient(circle, rgba(37, 99, 235, 0.18) 0%, rgba(99, 102, 241, 0.08) 50%, transparent 72%);
+  filter: blur(48px);
+  animation: blobDrift1 20s ease-in-out infinite alternate;
 }
 
 .ambient-blob-2 {
   position: absolute;
-  bottom: 10%;
-  left: 15%;
-  width: 450px;
-  height: 450px;
+  bottom: 8%;
+  left: 8%;
+  width: 540px;
+  height: 540px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(243, 232, 255, 0.45) 0%, rgba(248, 250, 252, 0) 70%);
-  filter: blur(40px);
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.16) 0%, rgba(99, 102, 241, 0.08) 50%, transparent 72%);
+  filter: blur(48px);
+  animation: blobDrift2 25s ease-in-out infinite alternate;
 }
 
-/* Native Spring Modal & Sheet Animation */
+.ambient-blob-3 {
+  position: absolute;
+  bottom: -12%;
+  right: 10%;
+  width: 500px;
+  height: 500px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.14) 0%, rgba(168, 85, 247, 0.08) 50%, transparent 72%);
+  filter: blur(50px);
+  animation: blobDrift3 18s ease-in-out infinite alternate;
+}
+
+/* ─── Animations ────────────────────────────────────────────────────────────── */
+@keyframes blobDrift1 {
+  from { transform: translate(0px, 0px) scale(1); }
+  to   { transform: translate(30px, -20px) scale(1.08); }
+}
+@keyframes blobDrift2 {
+  from { transform: translate(0px, 0px) scale(1); }
+  to   { transform: translate(-25px, 15px) scale(1.05); }
+}
+@keyframes blobDrift3 {
+  from { transform: translate(0px, 0px) scale(1); }
+  to   { transform: translate(20px, -10px) scale(1.06); }
+}
+
+/* Slide up spring */
 @keyframes slideUp {
-  from {
-    transform: translateY(18px) scale(0.98);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0) scale(1);
-    opacity: 1;
-  }
+  from { transform: translateY(18px) scale(0.98); opacity: 0; }
+  to   { transform: translateY(0) scale(1); opacity: 1; }
 }
+.animate-slide-up { animation: slideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
 
-.animate-slide-up {
-  animation: slideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
+/* Fade in */
 @keyframes fadeIn {
   from { opacity: 0; }
-  to { opacity: 1; }
+  to   { opacity: 1; }
+}
+.animate-fade-in { animation: fadeIn 0.2s ease-out forwards; }
+
+/* Shimmer for skeleton loading */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(241, 245, 249, 0.85) 0%,
+    rgba(255, 255, 255, 0.98) 40%,
+    rgba(241, 245, 249, 0.85) 80%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
 }
 
-.animate-fade-in {
-  animation: fadeIn 0.2s ease-out forwards;
+/* Soft pulse for live status indicators */
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.55; transform: scale(0.9); }
 }
+.animate-pulse-soft { animation: pulse-soft 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+
+/* Count up number animation */
+@keyframes countUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-count-up { animation: countUp 0.4s ease-out forwards; }
