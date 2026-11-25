@@ -1,19 +1,31 @@
 'use client';
 
 import React from 'react';
-import { ShieldCheck, MessageSquareText, Check, X } from 'lucide-react';
+import { ShieldCheck, MessageSquareText, Check, X, Smartphone } from 'lucide-react';
 import { useSms } from '@/components/sms/SmsProvider';
 
 export function SmsPermissionModal() {
-  const { isPermissionModalOpen, closePermissionModal, grantPermission, denyPermission } = useSms();
+  const {
+    isPermissionModalOpen,
+    isAndroidNative,
+    closePermissionModal,
+    grantPermission,
+    denyPermission,
+  } = useSms();
 
   if (!isPermissionModalOpen) return null;
 
-  const features = [
-    'Automatic detection',
-    'Zero manual entry',
-    '100% private',
-  ];
+  const features = isAndroidNative
+    ? [
+        'Automatic background bank & UPI SMS detection',
+        'Strict filter drops OTPs, promos & failed attempts',
+        'Raw SMS text never leaves your device',
+      ]
+    : [
+        'Smart bank SMS parser & duplicate protection',
+        'Paste single or bulk SMS statements anytime',
+        'Real-time background sync via Monzi Android App',
+      ];
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center animate-fade-in">
@@ -42,16 +54,28 @@ export function SmsPermissionModal() {
           </div>
 
           <h3 className="text-xl font-bold text-slate-900 tracking-tight">
-            Automatic SMS Detection
+            {isAndroidNative ? 'Enable Android SMS Sync' : 'SMS Sync & Detection'}
           </h3>
 
           <p className="text-sm text-slate-600 leading-relaxed mt-2 max-w-sm">
-            Monzi reads your bank SMS to automatically track transactions. We never store your SMS — only the extracted financial data.
+            {isAndroidNative
+              ? 'Monzi reads financial SMS on-device to automatically track your income and expenses. We ask once and never store raw SMS text.'
+              : 'Browsers cannot read SMS in the background automatically. Enable SMS Sync to paste bank messages here, or use the Monzi Android App for real-time background sync.'}
           </p>
         </div>
 
+        {!isAndroidNative && (
+          <div className="mt-4 p-3 rounded-xl bg-blue-50/80 border border-blue-100 flex items-start gap-2.5 text-left">
+            <Smartphone className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+            <p className="text-xs text-blue-900 leading-snug">
+              For automatic 24/7 SMS reading without manual pasting, sign in inside the{' '}
+              <span className="font-semibold">Monzi Android App</span>.
+            </p>
+          </div>
+        )}
+
         {/* 3 Feature Bullets */}
-        <div className="mt-6 space-y-2.5 bg-slate-50/80 border border-slate-100 rounded-2xl p-4">
+        <div className="mt-5 space-y-2.5 bg-slate-50/80 border border-slate-100 rounded-2xl p-4">
           {features.map((label) => (
             <div key={label} className="flex items-center gap-3 text-sm font-medium text-slate-800">
               <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
@@ -68,7 +92,7 @@ export function SmsPermissionModal() {
             onClick={grantPermission}
             className="w-full min-h-[48px] py-3.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-lg shadow-blue-500/25 active:scale-[0.99] transition-all"
           >
-            Enable SMS Reading
+            {isAndroidNative ? 'Allow SMS Permission' : 'Enable SMS Sync'}
           </button>
 
           <button
@@ -81,7 +105,7 @@ export function SmsPermissionModal() {
 
         {/* Privacy Note */}
         <p className="text-[11px] text-slate-400 text-center mt-4 leading-relaxed">
-          OTPs, personal conversations, and promotional texts are automatically ignored and never leave your device.
+          OTPs, personal messages, balance-only alerts, and promotional texts are automatically ignored and never saved.
         </p>
       </div>
     </div>

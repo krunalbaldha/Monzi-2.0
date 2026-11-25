@@ -1,48 +1,87 @@
 package com.krunal.monzi
 
 import android.content.Context
+import android.content.Intent
 import android.util.Log
-import androidx.work.*
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.Data
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.*
 
 class SyncWorker(appContext: Context, workerParams: WorkerParameters) :
     CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
-        val serverUrl = inputData.getString("server_url") ?: "http://10.0.2.2:3000/api/sync"
-        val syncSecret = inputData.getString("sync_secret") ?: "monzi_personal_sync_secret"
+        val prefs = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        val serverUrl = inputData.getString("server_url")
+            ?: prefs.getString("server_url", DEFAULT_SYNC_URL)
+            ?: DEFAULT_SYNC_URL
+        val syncToken = (inputData.getString("device_sync_token")
+            ?: prefs.getString("device_sync_token", "")
+            ?: "").trim()
+        val accessToken = (inputData.getString("access_token")
+            ?: prefs.getString("access_token", "")
+            ?: "").trim()
+        val syncSecret = (inputData.getString("sync_secret")
+            ?: prefs.getString("sync_secret", "")
+            ?: "").trim()
+
+        if (syncToken.isEmpty() && accessToken.isEmpty()) {
+            Log.w("MonziSync", "Skipping sync: user not signed in / no sync token configured yet")
+            return Result.failure()
+        }
 
         val amount = inputData.getDouble("amount", 0.0)
+        if (amount <= 0.0) {
+            return Result.failure()
+        }
+
         val direction = inputData.getString("direction") ?: "DEBIT"
         val bankName = inputData.getString("bank_name") ?: "Bank"
         val accountMask = inputData.getString("account_mask") ?: "XX0000"
         val merchant = inputData.getString("merchant")
         val referenceId = inputData.getString("reference_id")
         val paymentMode = inputData.getString("payment_mode") ?: "UPI"
-        val timestamp = inputData.getLong("timestamp", System.currentTimeMillis())
-
-        val isoDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.getDefault()).format(Date(timestamp))
+        val transactionDateIso = inputData.getString("transaction_date_iso") ?: ""
+        val transactionType = inputData.getString("transaction_type") ?: ""
+        val isSelfTransfer = inputData.getBoolean("is_self_transfer", false)
+        val isRefund = inputData.getBoolean("is_refund", false)
+        val sender = inputData.getString("sender") ?: ""
+        val hasBalance = inputData.getBoolean("has_available_balance", false)
+        val availableBalance = inputData.getDouble("parsed_available_balance", 0.0)
 
         return try {
             val jsonPayload = JSONObject().apply {
-                put("device_id", android.os.Build.MODEL)
-                put("sync_secret", syncSecret)
+                put("device_id", "android-${android.os.Build.MODEL}")
+                if (syncToken.isNotEmpty()) put("device_sync_token", syncToken)
+                if (syncSecret.isNotEmpty()) put("sync_secret", syncSecret)
+
                 val txnArray = JSONArray().apply {
                     val txn = JSONObject().apply {
-                        put("transaction_date", isoDate)
+                        if (transactionDateIso.isNotEmpty()) {
+                            put("transaction_date", transactionDateIso)
+                        }
                         put("amount", amount)
                         put("direction", direction)
                         put("bank_name", bankName)
                         put("account_mask", accountMask)
-                        merchant?.let { put("merchant", it) }
-                        referenceId?.let { put("reference_id", it) }
+                        if (!merchant.isNullOrBlank()) put("merchant", merchant)
+                        if (!referenceId.isNullOrBlank()) put("reference_id", referenceId)
                         put("payment_mode", paymentMode)
+                        if (transactionType.isNotEmpty()) put("transaction_type", transactionType)
+                        if (isSelfTransfer) put("is_self_transfer", true)
+                        if (isRefund) put("is_refund", true)
+                        if (sender.isNotEmpty()) put("sender", sender)
+                        if (hasBalance) put("parsed_available_balance", availableBalance)
                     }
                     put(txn)
                 }
@@ -53,10 +92,18 @@ class SyncWorker(appContext: Context, workerParams: WorkerParameters) :
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("x-monzi-secret", syncSecret)
+                if (syncToken.isNotEmpty()) {
+                    setRequestProperty("x-monzi-sync-token", syncToken)
+                }
+                if (accessToken.isNotEmpty()) {
+                    setRequestProperty("Authorization", "Bearer $accessToken")
+                }
+                if (syncSecret.isNotEmpty()) {
+                    setRequestProperty("x-monzi-secret", syncSecret)
+                }
                 doOutput = true
-                connectTimeout = 10000
-                readTimeout = 10000
+                connectTimeout = 12000
+                readTimeout = 12000
             }
 
             OutputStreamWriter(conn.outputStream).use { writer ->
@@ -65,12 +112,23 @@ class SyncWorker(appContext: Context, workerParams: WorkerParameters) :
             }
 
             val responseCode = conn.responseCode
-            if (responseCode in 200..299) {
-                Log.i("MonziSync", "Sync successful (HTTP $responseCode)")
-                Result.success()
-            } else {
-                Log.e("MonziSync", "Sync failed with HTTP $responseCode")
-                Result.retry()
+            when {
+                responseCode in 200..299 -> {
+                    Log.i("MonziSync", "Sync successful (HTTP $responseCode)")
+                    val syncedIntent = Intent(ACTION_SMS_SYNCED).apply {
+                        setPackage(applicationContext.packageName)
+                    }
+                    applicationContext.sendBroadcast(syncedIntent)
+                    Result.success()
+                }
+                responseCode in 400..499 -> {
+                    Log.e("MonziSync", "Sync rejected with HTTP $responseCode")
+                    Result.failure()
+                }
+                else -> {
+                    Log.e("MonziSync", "Sync failed with HTTP $responseCode, scheduling retry")
+                    Result.retry()
+                }
             }
         } catch (e: Exception) {
             Log.e("MonziSync", "Network error during sync", e)
@@ -79,14 +137,22 @@ class SyncWorker(appContext: Context, workerParams: WorkerParameters) :
     }
 
     companion object {
-        fun enqueueSync(context: Context, parsed: ParsedSms) {
-            val prefs = context.getSharedPreferences("monzi_prefs", Context.MODE_PRIVATE)
-            val serverUrl = prefs.getString("server_url", "http://10.0.2.2:3000/api/sync")
-            val secret = prefs.getString("sync_secret", "monzi_personal_sync_secret")
+        const val PREFS_NAME = "monzi_prefs"
+        const val DEFAULT_SYNC_URL = "https://ara20.vercel.app/api/sync"
+        const val ACTION_SMS_SYNCED = "com.krunal.monzi.SMS_SYNCED"
 
-            val data = Data.Builder()
+        fun enqueueSync(context: Context, parsed: ParsedSms, sender: String = "") {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val serverUrl = prefs.getString("server_url", DEFAULT_SYNC_URL) ?: DEFAULT_SYNC_URL
+            val syncToken = prefs.getString("device_sync_token", "") ?: ""
+            val accessToken = prefs.getString("access_token", "") ?: ""
+            val syncSecret = prefs.getString("sync_secret", "") ?: ""
+
+            val builder = Data.Builder()
                 .putString("server_url", serverUrl)
-                .putString("sync_secret", secret)
+                .putString("device_sync_token", syncToken)
+                .putString("access_token", accessToken)
+                .putString("sync_secret", syncSecret)
                 .putDouble("amount", parsed.amount)
                 .putString("direction", parsed.direction)
                 .putString("bank_name", parsed.bankName)
@@ -94,11 +160,22 @@ class SyncWorker(appContext: Context, workerParams: WorkerParameters) :
                 .putString("merchant", parsed.merchant)
                 .putString("reference_id", parsed.referenceId)
                 .putString("payment_mode", parsed.paymentMode)
+                .putString("transaction_date_iso", parsed.transactionDateIso)
+                .putString("transaction_type", parsed.transactionType)
+                .putBoolean("is_self_transfer", parsed.isSelfTransfer)
+                .putBoolean("is_refund", parsed.isRefund)
+                .putString("sender", sender)
                 .putLong("timestamp", parsed.timestamp)
-                .build()
+
+            if (parsed.parsedAvailableBalance != null) {
+                builder.putBoolean("has_available_balance", true)
+                builder.putDouble("parsed_available_balance", parsed.parsedAvailableBalance)
+            } else {
+                builder.putBoolean("has_available_balance", false)
+            }
 
             val workRequest = OneTimeWorkRequestBuilder<SyncWorker>()
-                .setInputData(data)
+                .setInputData(builder.build())
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)

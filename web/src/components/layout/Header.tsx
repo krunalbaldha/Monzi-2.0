@@ -2,10 +2,20 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { RefreshCw, Plus, Sparkles, Download, MessageSquare, Settings } from 'lucide-react';
+import {
+  RefreshCw,
+  Plus,
+  Sparkles,
+  Download,
+  MessageSquare,
+  Settings,
+  Lock,
+  LogOut,
+} from 'lucide-react';
 import { AddTransactionModal } from '@/components/dashboard/AddTransactionModal';
 import { usePwa } from '@/components/pwa/PwaProvider';
 import { useSms } from '@/components/sms/SmsProvider';
+import { useAuth } from '@/components/auth/AuthProvider';
 
 interface HeaderProps {
   onRefresh?: () => void;
@@ -16,6 +26,7 @@ export function Header({ onRefresh, isRefreshing }: HeaderProps) {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const { isInstallable, isInstalled, isIos, triggerInstall } = usePwa();
   const { openSyncModal, permissionState } = useSms();
+  const { user, profile, biometricEnabled, lockSession, signOut } = useAuth();
 
   const todayFormatted = new Intl.DateTimeFormat('en-IN', {
     weekday: 'short',
@@ -24,6 +35,18 @@ export function Header({ onRefresh, isRefreshing }: HeaderProps) {
   }).format(new Date());
 
   const isGranted = permissionState === 'granted';
+  const initials =
+    profile?.initials ||
+    (profile?.full_name
+      ? profile.full_name
+          .split(/\s+/)
+          .filter(Boolean)
+          .slice(0, 2)
+          .map((p) => p[0].toUpperCase())
+          .join('')
+      : user?.email
+      ? String(user.email).slice(0, 2).toUpperCase()
+      : 'U');
 
   return (
     <>
@@ -34,7 +57,6 @@ export function Header({ onRefresh, isRefreshing }: HeaderProps) {
         <div className="h-16 px-4 md:px-6 flex items-center justify-between gap-2.5">
           {/* ── Left: Brand & Date ──────────────────────────── */}
           <div className="flex items-center gap-2.5 min-w-0">
-            {/* Mobile Logo Mark */}
             <div className="md:hidden w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-sm shadow-blue-500/25 shrink-0">
               <Sparkles className="w-4 h-4" />
             </div>
@@ -49,44 +71,46 @@ export function Header({ onRefresh, isRefreshing }: HeaderProps) {
               </div>
               <p className="text-[11px] font-medium text-slate-400 leading-none mt-0.5 truncate">
                 {todayFormatted}
+                {profile?.full_name ? ` • ${profile.full_name.split(' ')[0]}` : ''}
               </p>
             </div>
           </div>
 
           {/* ── Right: Action Buttons ───────────────────────── */}
-          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-            {/* PWA Install Button (desktop/tablet) */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* PWA Install Button */}
             {!isInstalled && (isInstallable || isIos) && (
               <button
                 onClick={triggerInstall}
                 className="hidden sm:inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-xl text-xs font-semibold bg-indigo-50 border border-indigo-200/80 text-indigo-700 hover:bg-indigo-100 transition-all active:scale-95 shadow-sm"
-                title="Install Monzi as a standalone native-feeling App"
+                title="Install Monzi as a standalone App"
               >
                 <Download className="w-3.5 h-3.5 text-indigo-600" />
                 <span>Install</span>
               </button>
             )}
 
-            {/* Bank SMS Sync Pill */}
+            {/* Primary Automated SMS Sync Pill */}
             <button
               onClick={openSyncModal}
-              className="inline-flex items-center justify-center gap-1.5 min-h-[44px] min-w-[44px] px-2.5 sm:px-3.5 rounded-full text-xs font-semibold bg-emerald-50 border border-emerald-200/80 text-emerald-800 hover:bg-emerald-100 transition-all active:scale-95 shadow-sm"
-              title="Sync or paste bank notification SMS"
+              className="inline-flex items-center justify-center gap-1.5 min-h-[44px] min-w-[44px] px-3 sm:px-4 rounded-full text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-500/25 hover:shadow-lg hover:shadow-emerald-500/35 transition-all active:scale-95"
+              title="Automated SMS Sync & Processing Logs"
             >
-              <MessageSquare className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span className="hidden sm:inline">Sync SMS</span>
+              <MessageSquare className="w-4 h-4 shrink-0" />
+              <span className="hidden sm:inline">Auto SMS Sync</span>
               {isGranted && (
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-soft shrink-0" />
+                <span className="w-2 h-2 rounded-full bg-white animate-pulse-soft shrink-0" />
               )}
             </button>
 
-            {/* Add Transaction Blue Pill (collapsed on xs since mobile BottomNav has + FAB) */}
+            {/* Optional Secondary Manual Entry */}
             <button
               onClick={() => setIsAddModalOpen(true)}
-              className="hidden sm:inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 rounded-full text-xs font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25 hover:shadow-lg hover:shadow-blue-500/35 transition-all active:scale-95"
+              className="hidden lg:inline-flex items-center justify-center gap-1 min-h-[44px] px-3 rounded-xl text-xs font-semibold bg-white/90 border border-slate-200/80 text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-sm transition-all active:scale-95"
+              title="Add optional manual transaction"
             >
-              <Plus className="w-4 h-4" />
-              <span>Add Transaction</span>
+              <Plus className="w-3.5 h-3.5" />
+              <span>Manual</span>
             </button>
 
             {/* Refresh Icon Button */}
@@ -94,7 +118,7 @@ export function Header({ onRefresh, isRefreshing }: HeaderProps) {
               onClick={onRefresh}
               disabled={isRefreshing}
               className="w-11 h-11 flex items-center justify-center rounded-xl bg-white/90 border border-slate-200/80 text-slate-500 hover:text-slate-800 hover:bg-slate-50 shadow-sm transition-all active:scale-95 disabled:opacity-60"
-              title="Refresh live data from Supabase"
+              title="Refresh live data"
               aria-label="Refresh data"
             >
               <RefreshCw
@@ -102,7 +126,29 @@ export function Header({ onRefresh, isRefreshing }: HeaderProps) {
               />
             </button>
 
-            {/* Mobile Settings shortcut (since BottomNav has 5 items without Settings) */}
+            {/* Biometric Lock Button (if enabled) */}
+            {biometricEnabled && (
+              <button
+                onClick={() => lockSession()}
+                className="w-11 h-11 flex items-center justify-center rounded-xl bg-white/90 border border-slate-200/80 text-slate-600 hover:text-blue-600 hover:bg-blue-50 shadow-sm transition-all active:scale-95"
+                title="Lock App"
+                aria-label="Lock App"
+              >
+                <Lock className="w-4 h-4" />
+              </button>
+            )}
+
+            {/* Mobile Sign Out Button */}
+            <button
+              onClick={() => signOut()}
+              className="md:hidden w-11 h-11 flex items-center justify-center rounded-xl bg-white/90 border border-slate-200/80 text-slate-500 hover:text-rose-600 hover:bg-rose-50 shadow-sm transition-all active:scale-95"
+              title="Sign Out"
+              aria-label="Sign Out"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+
+            {/* Mobile Settings shortcut */}
             <Link
               href="/settings"
               className="md:hidden w-11 h-11 flex items-center justify-center rounded-xl bg-white/90 border border-slate-200/80 text-slate-500 hover:text-slate-800 hover:bg-slate-50 shadow-sm transition-all active:scale-95"
@@ -112,14 +158,14 @@ export function Header({ onRefresh, isRefreshing }: HeaderProps) {
               <Settings className="w-4 h-4" />
             </Link>
 
-            {/* User Avatar — KB initials, links to Settings */}
+            {/* Authenticated User Avatar */}
             <Link
               href="/settings"
               className="w-10 h-10 md:w-11 md:h-11 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 text-white flex items-center justify-center font-bold text-xs shadow-md shadow-blue-500/20 shrink-0 ring-2 ring-white hover:scale-105 active:scale-95 transition-transform"
-              title="Account & Settings"
+              title={profile?.full_name || user?.email || 'Account & Settings'}
               aria-label="User Profile and Settings"
             >
-              KB
+              {initials}
             </Link>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { supabase, isSupabaseConfigured, getErrorMessage } from '@/lib/supabase';
 
 export async function GET() {
   if (!isSupabaseConfigured) {
@@ -12,32 +12,42 @@ export async function GET() {
 
   const start = Date.now();
   try {
-    const [accRes, catRes, txRes] = await Promise.all([
-      supabase.from('accounts').select('id', { count: 'exact', head: true }),
-      supabase.from('categories').select('id', { count: 'exact', head: true }),
-      supabase.from('transactions').select('id', { count: 'exact', head: true }),
-    ]);
+    // Read-only connectivity check against non-sensitive categories metadata (never leak user financial data)
+    const { error } = await supabase
+      .from('categories')
+      .select('id', { count: 'exact', head: true });
 
     const latencyMs = Date.now() - start;
+
+    if (error) {
+      return NextResponse.json(
+        {
+          status: 'error',
+          configured: true,
+          latencyMs,
+          error: error.message,
+          timestamp: new Date().toISOString(),
+        },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       status: 'connected',
       configured: true,
       latencyMs,
-      counts: {
-        accounts: accRes.count ?? 0,
-        categories: catRes.count ?? 0,
-        transactions: txRes.count ?? 0,
-      },
-      supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ? 'https://hgxrqmkxxylfjgoqjkzp.supabase.co' : '',
       timestamp: new Date().toISOString(),
     });
-  } catch (err: any) {
-    return NextResponse.json({
-      status: 'error',
-      configured: true,
-      latencyMs: Date.now() - start,
-      error: err.message,
-    }, { status: 500 });
+  } catch (err: unknown) {
+    return NextResponse.json(
+      {
+        status: 'error',
+        configured: true,
+        latencyMs: Date.now() - start,
+        error: getErrorMessage(err),
+        timestamp: new Date().toISOString(),
+      },
+      { status: 500 }
+    );
   }
 }

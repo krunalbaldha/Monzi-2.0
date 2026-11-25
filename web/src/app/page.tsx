@@ -3,14 +3,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/layout/Header';
-import { SummaryCards } from '@/components/dashboard/SummaryCards';
+import { SummaryCards, ExtendedFinancialSummary } from '@/components/dashboard/SummaryCards';
 import { CashFlowChart } from '@/components/dashboard/CashFlowChart';
 import { CategoryBreakdown } from '@/components/dashboard/CategoryBreakdown';
 import { RecentTransactions } from '@/components/dashboard/RecentTransactions';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { FinancialSummary, Transaction, Account, AccountType } from '@/lib/types';
+import { Transaction, Account, AccountType } from '@/lib/types';
 import {
   CreditCard,
   Plus,
@@ -19,19 +19,58 @@ import {
   BarChart3,
   Landmark,
   AlertCircle,
+  Sparkles,
+  TrendingUp,
+  TrendingDown,
+  MessageSquare,
+  Database,
+  ArrowUpRight,
+  ArrowDownRight,
 } from 'lucide-react';
 import { AddAccountModal } from '@/components/dashboard/AddAccountModal';
 import { AddTransactionModal } from '@/components/dashboard/AddTransactionModal';
 import { useSms } from '@/components/sms/SmsProvider';
+import { useAuth } from '@/components/auth/AuthProvider';
 
-const emptySummary: FinancialSummary = {
+interface TodayStats {
+  income: number;
+  expenses: number;
+  net: number;
+  transaction_count: number;
+  top_category: string | null;
+  yesterday_expenses: number;
+  expense_delta_pct: number;
+}
+
+interface BankSummaryItem {
+  bank_name: string;
+  account_count: number;
+  balance: number;
+  total_credit: number;
+  total_debit: number;
+  tx_count: number;
+}
+
+const emptySummary: ExtendedFinancialSummary = {
   total_balance: 0,
+  total_income: 0,
+  total_expenses: 0,
   monthly_income: 0,
   monthly_expense: 0,
   net_savings: 0,
   savings_rate: 0,
   income_change_pct: 0,
   expense_change_pct: 0,
+};
+
+const emptyToday: TodayStats = {
+  income: 0,
+  expenses: 0,
+  net: 0,
+  transaction_count: 0,
+  top_category: null,
+  yesterday_expenses: 0,
+  expense_delta_pct: 0,
 };
 
 function getBankAccent(bankName: string): {
@@ -91,7 +130,9 @@ function formatAccountType(type: AccountType): string {
 }
 
 export default function DashboardPage() {
-  const [summary, setSummary] = useState<FinancialSummary>(emptySummary);
+  const [summary, setSummary] = useState<ExtendedFinancialSummary>(emptySummary);
+  const [today, setToday] = useState<TodayStats>(emptyToday);
+  const [bankSummary, setBankSummary] = useState<BankSummaryItem[]>([]);
   const [cashFlow, setCashFlow] = useState<
     Array<{ month: string; income: number; expense: number }>
   >([]);
@@ -103,9 +144,12 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [migrationPending, setMigrationPending] = useState(false);
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
   const [isAddTxOpen, setIsAddTxOpen] = useState(false);
+
   const { openSyncModal } = useSms();
+  const { user, loading: authLoading } = useAuth();
 
   const fetchData = useCallback(async () => {
     setIsRefreshing(true);
@@ -117,26 +161,41 @@ export default function DashboardPage() {
         fetch('/api/accounts'),
       ]);
 
+      if (statsRes.status === 401 || txRes.status === 401 || accRes.status === 401) {
+        setLoading(false);
+        setIsRefreshing(false);
+        return;
+      }
+
       if (!statsRes.ok && !txRes.ok && !accRes.ok) {
         throw new Error('Unable to reach database APIs');
       }
 
+      let needsMigration = false;
+
       if (statsRes.ok) {
         const statsData = await statsRes.json();
+        if (statsData.schema_migration_required) needsMigration = true;
         if (statsData.summary) setSummary(statsData.summary);
+        if (statsData.today) setToday(statsData.today);
+        setBankSummary(statsData.bankSummary || []);
         setCashFlow(statsData.cashFlow || []);
         setCategories(statsData.categoryBreakdown || []);
       }
 
       if (txRes.ok) {
         const txData = await txRes.json();
+        if (txData.schema_migration_required) needsMigration = true;
         setTransactions(txData.transactions || []);
       }
 
       if (accRes.ok) {
         const accData = await accRes.json();
+        if (accData.schema_migration_required) needsMigration = true;
         setAccounts(accData.accounts || []);
       }
+
+      setMigrationPending(needsMigration);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Failed to load dashboard data';
       console.error('Failed to fetch dashboard data', e);
@@ -148,7 +207,24 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    fetchData();
+    if (!authLoading && user) {
+      fetchData();
+    } else if (!authLoading && !user) {
+      setLoading(false);
+    }
+  }, [authLoading, user, fetchData]);
+
+  // Listen for real-time Android / Modal SMS sync and manual refresh events
+  useEffect(() => {
+    const handleSyncEvent = () => {
+      fetchData();
+    };
+    window.addEventListener('monzi:sms-synced', handleSyncEvent);
+    window.addEventListener('monzi:refresh', handleSyncEvent);
+    return () => {
+      window.removeEventListener('monzi:sms-synced', handleSyncEvent);
+      window.removeEventListener('monzi:refresh', handleSyncEvent);
+    };
   }, [fetchData]);
 
   const formatInr = (val: number) =>
@@ -163,6 +239,23 @@ export default function DashboardPage() {
       <Header onRefresh={fetchData} isRefreshing={isRefreshing} />
 
       <div className="p-4 sm:p-6 md:p-8 space-y-5 md:space-y-7 max-w-7xl mx-auto w-full">
+        {/* Schema Migration Notice */}
+        {migrationPending && (
+          <GlassCard className="p-4 border-amber-200/80 bg-amber-50/80 flex items-start gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+              <Database className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-amber-900">
+                Database Migration Required
+              </p>
+              <p className="text-xs text-amber-800 mt-0.5">
+                Run <code className="font-mono bg-amber-100 px-1.5 py-0.5 rounded">supabase/migrations/002_auth_rls_and_logs.sql</code> in the Supabase SQL Editor to enable multi-user data isolation and SMS processing logs.
+              </p>
+            </div>
+          </GlassCard>
+        )}
+
         {/* Error Banner */}
         {error && (
           <GlassCard className="p-4 border-rose-200/80 bg-rose-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -185,12 +278,123 @@ export default function DashboardPage() {
           </GlassCard>
         )}
 
+        {/* ── TODAY'S AUTOMATED FINANCIAL ANALYSIS ────────────────────────── */}
+        <section>
+          <GlassCard className="p-5 sm:p-6 bg-gradient-to-br from-white/85 via-blue-50/40 to-indigo-50/40 border-blue-100/70">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shadow-sm shadow-blue-500/25 shrink-0">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight">
+                    Today&apos;s Automated Financial Analysis
+                  </h2>
+                  <p className="text-[11px] sm:text-xs text-slate-500 font-medium">
+                    Real-time summary from automated SMS &amp; ledger activity today
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {today.yesterday_expenses > 0 && (
+                  <span
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                      today.expense_delta_pct > 0
+                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    }`}
+                  >
+                    {today.expense_delta_pct > 0 ? (
+                      <ArrowUpRight className="w-3.5 h-3.5" />
+                    ) : (
+                      <ArrowDownRight className="w-3.5 h-3.5" />
+                    )}
+                    {today.expense_delta_pct > 0 ? '+' : ''}
+                    {today.expense_delta_pct}% vs yesterday
+                  </span>
+                )}
+                <button
+                  onClick={openSyncModal}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Sync SMS</span>
+                </button>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <div key={i} className="p-3.5 rounded-2xl bg-white/75 border border-white/80">
+                    <Skeleton className="h-3 w-20 rounded-full mb-2" />
+                    <Skeleton className="h-6 w-24 rounded-lg" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                <div className="p-3.5 rounded-2xl bg-white/80 border border-slate-200/60">
+                  <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                    Today&apos;s Income
+                  </p>
+                  <p className="text-lg font-bold font-mono text-emerald-600 mt-1">
+                    {formatInr(today.income)}
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-white/80 border border-slate-200/60">
+                  <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                    Today&apos;s Expenses
+                  </p>
+                  <p className="text-lg font-bold font-mono text-rose-500 mt-1">
+                    {formatInr(today.expenses)}
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-white/80 border border-slate-200/60">
+                  <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                    Today&apos;s Net
+                  </p>
+                  <p
+                    className={`text-lg font-bold font-mono mt-1 ${
+                      today.net >= 0 ? 'text-indigo-600' : 'text-rose-600'
+                    }`}
+                  >
+                    {today.net >= 0 ? '+' : ''}
+                    {formatInr(today.net)}
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-white/80 border border-slate-200/60">
+                  <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                    Transactions
+                  </p>
+                  <p className="text-lg font-bold font-mono text-slate-900 mt-1">
+                    {today.transaction_count}
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-white/80 border border-slate-200/60 col-span-2 sm:col-span-1">
+                  <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                    Top Spend Category
+                  </p>
+                  <p className="text-sm sm:text-base font-bold text-slate-900 mt-1.5 truncate">
+                    {today.top_category || 'No spend today'}
+                  </p>
+                </div>
+              </div>
+            )}
+          </GlassCard>
+        </section>
+
         {/* ── TOP SECTION 1: Account Cards Horizontal Scroll ───────────────── */}
         <section>
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                Accounts & Cards ({accounts.length})
+                Accounts &amp; Cards ({accounts.length})
               </h2>
             </div>
             <div className="flex items-center gap-2">
@@ -233,10 +437,10 @@ export default function DashboardPage() {
           ) : accounts.length === 0 ? (
             <EmptyState
               icon={CreditCard}
-              title="No Bank Accounts Linked"
-              description="Connect your bank accounts or credit cards to track live balances automatically."
-              actionLabel="Add Your First Account"
-              onAction={() => setIsAddAccountOpen(true)}
+              title="No Bank Accounts Linked Yet"
+              description="Sync a bank SMS from your Android app or paste an SMS to auto-detect your bank account, or add one manually."
+              actionLabel="Sync Bank SMS"
+              onAction={openSyncModal}
               className="!py-10"
             />
           ) : (
@@ -251,7 +455,6 @@ export default function DashboardPage() {
                     className="min-w-[85vw] sm:min-w-[300px] md:min-w-0 snap-center shrink-0 md:shrink block group"
                   >
                     <GlassCard className="p-5 relative overflow-hidden hover:shadow-[0_8px_30px_rgba(0,0,0,0.09)] hover:-translate-y-0.5 transition-all active:scale-[0.99]">
-                      {/* Bank gradient top accent bar */}
                       <div
                         className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${accent.topBar}`}
                       />
@@ -315,23 +518,73 @@ export default function DashboardPage() {
           <SummaryCards summary={summary} loading={loading} />
         </section>
 
+        {/* ── BANK-WISE SUMMARY STRIP ──────────────────────────────────────── */}
+        {!loading && bankSummary.length > 0 && (
+          <section>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                Bank-Wise Summary ({bankSummary.length})
+              </h2>
+              <Link
+                href="/analytics"
+                className="text-xs font-semibold text-blue-600 hover:text-blue-700 inline-flex items-center gap-1"
+              >
+                <span>Detailed Analytics</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {bankSummary.map((bank) => (
+                <GlassCard key={bank.bank_name} className="p-4">
+                  <div className="flex items-center justify-between gap-2 mb-2.5">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                        <Landmark className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-900 truncate">
+                          {bank.bank_name}
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          {bank.account_count} {bank.account_count === 1 ? 'account' : 'accounts'} • {bank.tx_count} txns
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-sm font-bold font-mono text-slate-900 shrink-0">
+                      {formatInr(bank.balance)}
+                    </span>
+                  </div>
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs font-mono font-semibold">
+                    <span className="inline-flex items-center gap-1 text-emerald-600">
+                      <TrendingUp className="w-3.5 h-3.5" />+{formatInr(bank.total_credit)}
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-rose-500">
+                      <TrendingDown className="w-3.5 h-3.5" />-{formatInr(bank.total_debit)}
+                    </span>
+                  </div>
+                </GlassCard>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* ── MIDDLE SECTION 3: Quick Actions Row ──────────────────────────── */}
         <section>
           <div className="flex items-center gap-2.5 overflow-x-auto pb-1 scrollbar-none">
             <button
-              onClick={() => setIsAddTxOpen(true)}
-              className="btn-primary !min-h-[44px] !px-4 !py-2 text-xs sm:text-sm shrink-0 rounded-full"
+              onClick={openSyncModal}
+              className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 py-2 rounded-full text-xs sm:text-sm font-bold bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-500/25 hover:shadow-lg hover:shadow-emerald-500/35 transition-all active:scale-95 shrink-0"
             >
-              <Plus className="w-4 h-4" />
-              <span>Add Transaction</span>
+              <MessageSquare className="w-4 h-4" />
+              <span>Automated SMS Sync</span>
             </button>
 
             <button
-              onClick={openSyncModal}
-              className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2 rounded-full text-xs sm:text-sm font-semibold bg-emerald-50/90 text-emerald-700 border border-emerald-200/80 hover:bg-emerald-100/90 transition-all active:scale-95 shrink-0 shadow-sm"
+              onClick={() => setIsAddTxOpen(true)}
+              className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2 rounded-full text-xs sm:text-sm font-semibold bg-white/80 backdrop-blur-xl text-slate-700 border border-white/60 shadow-[0_2px_12px_rgba(0,0,0,0.05)] hover:bg-white transition-all active:scale-95 shrink-0"
             >
-              <RefreshCw className="w-4 h-4 text-emerald-600" />
-              <span>Sync SMS</span>
+              <Plus className="w-4 h-4 text-blue-600" />
+              <span>Manual Entry</span>
             </button>
 
             <Link

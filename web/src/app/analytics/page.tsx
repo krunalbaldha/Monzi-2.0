@@ -31,8 +31,10 @@ import {
   ArrowRight,
   RefreshCw,
   AlertCircle,
+  Landmark,
 } from 'lucide-react';
 import { Account, AccountType, FinancialSummary, Transaction } from '@/lib/types';
+import { useAuth } from '@/components/auth/AuthProvider';
 
 type PeriodKey = 'THIS_MONTH' | 'LAST_MONTH' | 'LAST_3_MONTHS';
 
@@ -169,9 +171,23 @@ export default function AnalyticsPage() {
   const [statsCashFlow, setStatsCashFlow] = useState<
     Array<{ month: string; income: number; expense: number }>
   >([]);
+  const [dailyTrend, setDailyTrend] = useState<
+    Array<{ date: string; label: string; income: number; expense: number }>
+  >([]);
+  const [bankSummary, setBankSummary] = useState<
+    Array<{
+      bank_name: string;
+      account_count: number;
+      balance: number;
+      total_credit: number;
+      total_debit: number;
+      tx_count: number;
+    }>
+  >([]);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { user, loading: authLoading } = useAuth();
 
   const fetchAnalytics = useCallback(async () => {
     setIsRefreshing(true);
@@ -183,6 +199,12 @@ export default function AnalyticsPage() {
         fetch('/api/accounts'),
       ]);
 
+      if (statsRes.status === 401 || txRes.status === 401 || accRes.status === 401) {
+        setLoading(false);
+        setIsRefreshing(false);
+        return;
+      }
+
       if (!statsRes.ok && !txRes.ok && !accRes.ok) {
         throw new Error('Failed to load analytics data from database');
       }
@@ -191,6 +213,8 @@ export default function AnalyticsPage() {
         const statsData = await statsRes.json();
         setStatsSummary(statsData.summary || null);
         setStatsCashFlow(statsData.cashFlow || []);
+        setDailyTrend(statsData.dailyTrend || []);
+        setBankSummary(statsData.bankSummary || []);
       }
 
       if (txRes.ok) {
@@ -213,7 +237,21 @@ export default function AnalyticsPage() {
   }, []);
 
   useEffect(() => {
-    fetchAnalytics();
+    if (!authLoading && user) {
+      fetchAnalytics();
+    } else if (!authLoading && !user) {
+      setLoading(false);
+    }
+  }, [authLoading, user, fetchAnalytics]);
+
+  useEffect(() => {
+    const onSync = () => fetchAnalytics();
+    window.addEventListener('monzi:sms-synced', onSync);
+    window.addEventListener('monzi:refresh', onSync);
+    return () => {
+      window.removeEventListener('monzi:sms-synced', onSync);
+      window.removeEventListener('monzi:refresh', onSync);
+    };
   }, [fetchAnalytics]);
 
   // Date window for selected period
@@ -602,6 +640,75 @@ export default function AnalyticsPage() {
           </div>
         )}
 
+        {/* ── Daily Income & Expense Chart (Last 14 Days) ─────────────────── */}
+        <GlassCard className="p-4 sm:p-6">
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <h3 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight">
+                Daily Income &amp; Expense (Last 14 Days)
+              </h3>
+              <p className="text-[11px] sm:text-xs text-slate-500 font-medium mt-0.5">
+                Day-by-day automated cash flow tracking
+              </p>
+            </div>
+            {dailyTrend.some((d) => d.income > 0 || d.expense > 0) && !loading && (
+              <div className="flex items-center gap-3 text-[11px] sm:text-xs font-semibold">
+                <span className="flex items-center gap-1.5 text-slate-600">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                  Income
+                </span>
+                <span className="flex items-center gap-1.5 text-slate-600">
+                  <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+                  Expense
+                </span>
+              </div>
+            )}
+          </div>
+
+          {loading ? (
+            <div className="h-[220px] flex items-end gap-2 px-2 pb-2">
+              {Array.from({ length: 14 }).map((_, i) => (
+                <div key={i} className="flex-1 flex items-end gap-1 h-full pt-6">
+                  <Skeleton className="flex-1 rounded-t-md h-3/5" />
+                  <Skeleton className="flex-1 rounded-t-md h-2/5" />
+                </div>
+              ))}
+            </div>
+          ) : !dailyTrend.some((d) => d.income > 0 || d.expense > 0) ? (
+            <EmptyState
+              icon={BarChart3}
+              title="No Daily Activity Yet"
+              description="Sync bank SMS or record transactions to populate your 14-day daily cash flow chart."
+              className="h-[220px] !py-6 !shadow-none border border-dashed border-slate-200/80 bg-slate-50/40"
+            />
+          ) : (
+            <div className="h-[240px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={dailyTrend} margin={{ top: 8, right: 6, left: -12, bottom: 0 }} barGap={2}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" opacity={0.65} />
+                  <XAxis
+                    dataKey="label"
+                    tickLine={false}
+                    axisLine={false}
+                    tick={{ fill: '#64748B', fontSize: 10, fontWeight: 500 }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    tick={{ fill: '#64748B', fontSize: 11 }}
+                    tickFormatter={formatInrShort}
+                    width={50}
+                  />
+                  <Tooltip content={<TrendTooltip />} cursor={{ fill: 'rgba(226,232,240,0.35)', radius: 8 }} />
+                  <Bar dataKey="income" fill="#10B981" radius={[4, 4, 0, 0]} maxBarSize={20} />
+                  <Bar dataKey="expense" fill="#EF4444" radius={[4, 4, 0, 0]} maxBarSize={20} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </GlassCard>
+
         {/* ── Section 3 & 4: Trend Chart + Category Pie Chart ─────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 md:gap-6">
           {/* Section 3: Income vs Expense Trend Chart */}
@@ -940,6 +1047,76 @@ export default function AnalyticsPage() {
             )}
           </GlassCard>
         </div>
+
+        {/* ── Section 7: Bank-Wise Summary ────────────────────────────────── */}
+        <GlassCard className="p-4 sm:p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight">
+                Bank-Wise Summary
+              </h3>
+              <p className="text-[11px] sm:text-xs text-slate-500 font-medium mt-0.5">
+                Aggregated balances, credits, and debits grouped by bank
+              </p>
+            </div>
+            <span className="text-[11px] font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
+              {bankSummary.length} {bankSummary.length === 1 ? 'bank' : 'banks'}
+            </span>
+          </div>
+
+          {loading ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="p-4 rounded-2xl border border-slate-100 bg-white/50 space-y-2.5">
+                  <Skeleton className="h-4 w-32 rounded-full" />
+                  <Skeleton className="h-6 w-24 rounded-lg" />
+                  <Skeleton className="h-3 w-full rounded-full" />
+                </div>
+              ))}
+            </div>
+          ) : bankSummary.length === 0 ? (
+            <EmptyState
+              icon={Landmark}
+              title="No Bank Summary Available"
+              description="Link or sync at least one bank account to see bank-level aggregates."
+              className="!py-8 !shadow-none border border-dashed border-slate-200/80 bg-slate-50/40"
+            />
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {bankSummary.map((bank) => (
+                <div
+                  key={bank.bank_name}
+                  className="p-4 rounded-2xl bg-white/75 border border-slate-200/70 space-y-2.5"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                        <Landmark className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-900 truncate">{bank.bank_name}</p>
+                        <p className="text-[11px] text-slate-500">
+                          {bank.account_count} {bank.account_count === 1 ? 'account' : 'accounts'} • {bank.tx_count} txns
+                        </p>
+                      </div>
+                    </div>
+                    <p
+                      className={`text-sm sm:text-base font-bold font-mono shrink-0 ${
+                        bank.balance < 0 ? 'text-rose-600' : 'text-slate-900'
+                      }`}
+                    >
+                      {formatInr(bank.balance)}
+                    </p>
+                  </div>
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs font-mono font-semibold">
+                    <span className="text-emerald-600">+{formatInr(bank.total_credit)} credit</span>
+                    <span className="text-rose-500">-{formatInr(bank.total_debit)} debit</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </GlassCard>
       </div>
     </div>
   );

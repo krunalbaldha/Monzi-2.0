@@ -22,16 +22,24 @@ import {
   FileSpreadsheet,
   AlertTriangle,
   ShieldAlert,
+  Fingerprint,
+  Lock,
+  LogOut,
+  Copy,
+  KeyRound,
+  Eye,
+  EyeOff,
+  ShieldCheck,
 } from 'lucide-react';
 import { Account, Category, Transaction } from '@/lib/types';
 import { useToast } from '@/components/ui/Toast';
 import { usePwa } from '@/components/pwa/PwaProvider';
 import { useSms } from '@/components/sms/SmsProvider';
+import { useAuth } from '@/components/auth/AuthProvider';
 
 interface HealthStatus {
   status: 'connected' | 'unconfigured' | 'error';
   latencyMs?: number;
-  counts?: { accounts: number; categories: number; transactions: number };
 }
 
 const COLOR_PRESETS = [
@@ -45,6 +53,8 @@ const COLOR_PRESETS = [
   '#64748B',
 ];
 
+const PRODUCTION_SYNC_URL = 'https://ara20.vercel.app/api/sync';
+
 const formatInr = (val: number) =>
   new Intl.NumberFormat('en-IN', {
     style: 'currency',
@@ -53,11 +63,32 @@ const formatInr = (val: number) =>
   }).format(val);
 
 export default function SettingsPage() {
+  const {
+    user,
+    profile,
+    loading: authLoading,
+    biometricSupported,
+    biometricEnabled,
+    refreshAuth,
+    signOut,
+    lockSession,
+    enrollBiometric,
+    disableBiometric,
+  } = useAuth();
+
   // Profile
-  const [userName, setUserName] = useState('Krunal Baldha');
-  const [draftName, setDraftName] = useState('Krunal Baldha');
+  const [userName, setUserName] = useState('');
+  const [draftName, setDraftName] = useState('');
   const [isEditingName, setIsEditingName] = useState(false);
   const [isSavingName, setIsSavingName] = useState(false);
+
+  // Android Sync Token
+  const [deviceSyncToken, setDeviceSyncToken] = useState('');
+  const [showSyncToken, setShowSyncToken] = useState(false);
+  const [isRegeneratingToken, setIsRegeneratingToken] = useState(false);
+
+  // Security & Biometrics
+  const [isTogglingBiometric, setIsTogglingBiometric] = useState(false);
 
   // SMS
   const sms = useSms();
@@ -81,13 +112,25 @@ export default function SettingsPage() {
   // Data & Privacy
   const [isExporting, setIsExporting] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
-  const [resetSecretInput, setResetSecretInput] = useState(
-    process.env.NEXT_PUBLIC_MONZI_SYNC_SECRET || ''
-  );
+  const [resetConfirmInput, setResetConfirmInput] = useState('');
   const [isResetting, setIsResetting] = useState(false);
 
   const toast = useToast();
   const { isInstallable, isInstalled, isIos, triggerInstall } = usePwa();
+
+  // Bind directly to useAuth().profile
+  useEffect(() => {
+    if (profile) {
+      const resolvedName = profile.full_name || profile.email || 'User';
+      setUserName(resolvedName);
+      if (!isEditingName) {
+        setDraftName(resolvedName);
+      }
+      if (profile.device_sync_token) {
+        setDeviceSyncToken(profile.device_sync_token);
+      }
+    }
+  }, [profile, isEditingName]);
 
   const checkHealth = useCallback(async () => {
     setIsCheckingHealth(true);
@@ -111,9 +154,13 @@ export default function SettingsPage() {
       ]);
       if (userRes.ok) {
         const d = await userRes.json();
-        if (d.profile?.name) {
-          setUserName(d.profile.name);
-          setDraftName(d.profile.name);
+        const resolved = d.profile?.full_name || d.profile?.name;
+        if (resolved) {
+          setUserName(resolved);
+          setDraftName(resolved);
+        }
+        if (d.profile?.device_sync_token) {
+          setDeviceSyncToken(d.profile.device_sync_token);
         }
       }
       if (accRes.ok) {
@@ -130,12 +177,14 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    fetchAll();
+    if (!authLoading && user) {
+      fetchAll();
+    }
     checkHealth();
 
-    // Check last sync time from context or localStorage
     const ctxSync = (sms as unknown as { lastSyncTime?: Date | null }).lastSyncTime;
-    const storedSync = typeof window !== 'undefined' ? localStorage.getItem('monzi_last_sync') : null;
+    const storedSync =
+      typeof window !== 'undefined' ? localStorage.getItem('monzi_last_sync') : null;
     const syncDate = ctxSync ? new Date(ctxSync) : storedSync ? new Date(storedSync) : null;
     if (syncDate && !isNaN(syncDate.getTime())) {
       setLastSyncText(
@@ -147,7 +196,7 @@ export default function SettingsPage() {
         })
       );
     }
-  }, [fetchAll, checkHealth, sms]);
+  }, [authLoading, user, fetchAll, checkHealth, sms]);
 
   const handleSaveName = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -161,7 +210,7 @@ export default function SettingsPage() {
       const res = await fetch('/api/user', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: trimmed }),
+        body: JSON.stringify({ full_name: trimmed }),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -169,11 +218,63 @@ export default function SettingsPage() {
       }
       setUserName(trimmed);
       setIsEditingName(false);
-      toast.success('Profile name updated');
+      await refreshAuth();
+      toast.success('Profile updated');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed to update profile');
     } finally {
       setIsSavingName(false);
+    }
+  };
+
+  const handleToggleBiometric = async () => {
+    setIsTogglingBiometric(true);
+    try {
+      if (biometricEnabled) {
+        const res = await disableBiometric();
+        if (!res.success) throw new Error(res.error || 'Could not disable biometric lock');
+        toast.success('Biometric lock disabled');
+      } else {
+        const res = await enrollBiometric();
+        if (!res.success) throw new Error(res.error || 'Could not enable biometric lock');
+        toast.success('Fingerprint / Face ID enabled for this device');
+      }
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Biometric update failed');
+    } finally {
+      setIsTogglingBiometric(false);
+    }
+  };
+
+  const handleCopyText = async (value: string, label: string) => {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(`${label} copied to clipboard`);
+    } catch {
+      toast.error(`Failed to copy ${label}`);
+    }
+  };
+
+  const handleRegenerateSyncToken = async () => {
+    setIsRegeneratingToken(true);
+    try {
+      const res = await fetch('/api/user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ regenerate_sync_token: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to regenerate sync token');
+      if (data.profile?.device_sync_token) {
+        setDeviceSyncToken(data.profile.device_sync_token);
+      }
+      await refreshAuth();
+      toast.success('New Android sync token generated');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to regenerate token');
+    } finally {
+      setIsRegeneratingToken(false);
     }
   };
 
@@ -314,23 +415,26 @@ export default function SettingsPage() {
 
   const handleResetAllData = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (resetConfirmInput.trim().toUpperCase() !== 'RESET') {
+      toast.error('Please type RESET to confirm');
+      return;
+    }
+
     setIsResetting(true);
     try {
       const res = await fetch('/api/reset', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-monzi-secret': resetSecretInput.trim(),
-        },
       });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Reset failed');
       }
-      toast.success(data.message || 'All transactions and accounts cleared');
+      toast.success(data.message || 'Your transactions and accounts have been cleared');
       setIsResetModalOpen(false);
+      setResetConfirmInput('');
       fetchAll();
       checkHealth();
+      window.dispatchEvent(new CustomEvent('monzi:refresh'));
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Reset failed');
     } finally {
@@ -338,12 +442,16 @@ export default function SettingsPage() {
     }
   };
 
-  const initials = userName
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((p) => p[0].toUpperCase())
-    .join('') || 'KB';
+  const displayName = userName || profile?.full_name || user?.email || 'Account';
+  const initials =
+    profile?.initials ||
+    displayName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((p: string) => p[0].toUpperCase())
+      .join('') ||
+    'U';
 
   const totalAccountBalance = accounts.reduce(
     (sum, a) => sum + Number(a.current_balance),
@@ -377,13 +485,19 @@ export default function SettingsPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <Header onRefresh={() => { fetchAll(); checkHealth(); }} isRefreshing={isCheckingHealth} />
+      <Header
+        onRefresh={() => {
+          fetchAll();
+          checkHealth();
+        }}
+        isRefreshing={isCheckingHealth}
+      />
 
       <div className="p-4 sm:p-6 md:p-8 space-y-5 max-w-4xl mx-auto w-full">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-slate-900">Settings</h2>
           <p className="text-xs text-slate-500 font-medium mt-0.5">
-            Profile, SMS automation, categories, PWA &amp; data controls
+            Profile, biometric security, Android SMS companion sync, categories &amp; data controls
           </p>
         </div>
 
@@ -396,12 +510,15 @@ export default function SettingsPage() {
               </div>
 
               {isEditingName ? (
-                <form onSubmit={handleSaveName} className="flex items-center gap-2 flex-1 flex-wrap sm:flex-nowrap">
+                <form
+                  onSubmit={handleSaveName}
+                  className="flex items-center gap-2 flex-1 flex-wrap sm:flex-nowrap"
+                >
                   <input
                     type="text"
                     value={draftName}
                     onChange={(e) => setDraftName(e.target.value)}
-                    placeholder="Your name"
+                    placeholder="Your full name"
                     autoFocus
                     className={`${inputCls} flex-1 min-w-[160px] min-h-[44px]`}
                   />
@@ -417,7 +534,7 @@ export default function SettingsPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        setDraftName(userName);
+                        setDraftName(displayName);
                         setIsEditingName(false);
                       }}
                       className="p-2.5 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 min-h-[44px] min-w-[44px] flex items-center justify-center"
@@ -430,15 +547,15 @@ export default function SettingsPage() {
               ) : (
                 <div className="min-w-0">
                   <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-                    Profile
+                    Authenticated Profile
                   </span>
                   <div className="flex items-center gap-2">
                     <h3 className="text-base sm:text-lg font-bold text-slate-900 truncate">
-                      {userName}
+                      {displayName}
                     </h3>
                     <button
                       onClick={() => {
-                        setDraftName(userName);
+                        setDraftName(displayName);
                         setIsEditingName(true);
                       }}
                       className="p-2 rounded-xl text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-all min-h-[44px] min-w-[44px] flex items-center justify-center"
@@ -448,13 +565,183 @@ export default function SettingsPage() {
                       <Pencil className="w-4 h-4" />
                     </button>
                   </div>
+                  {(profile?.email || user?.email) && (
+                    <p className="text-xs text-slate-500 truncate">
+                      {profile?.email || user?.email}
+                    </p>
+                  )}
                 </div>
               )}
             </div>
           </div>
         </GlassCard>
 
-        {/* Section 2: SMS & Automation */}
+        {/* Section 2: Security & Biometrics */}
+        <GlassCard className="p-5 sm:p-6 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                <Fingerprint className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                  Security &amp; Biometrics
+                </h3>
+                <p className="text-xs text-slate-500 font-medium">
+                  Protect your financial dashboard with Fingerprint / Face ID (WebAuthn)
+                </p>
+              </div>
+            </div>
+
+            <span
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border self-start sm:self-auto ${
+                biometricEnabled
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : 'bg-slate-100 text-slate-600 border-slate-200'
+              }`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              {biometricEnabled ? 'Biometrics Active' : 'Password Only'}
+            </span>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold text-slate-800">
+                Fingerprint / Face ID App Lock
+              </p>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {biometricSupported
+                  ? biometricEnabled
+                    ? 'Enabled on your account. You can lock the session anytime.'
+                    : 'Supported on this device. Enroll in 1 tap for fast biometric unlock.'
+                  : 'Platform biometric authenticator is not available in this browser.'}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleToggleBiometric}
+              disabled={isTogglingBiometric || (!biometricEnabled && !biometricSupported)}
+              className={`px-4 py-2.5 rounded-xl text-xs font-semibold transition-all min-h-[44px] shrink-0 disabled:opacity-50 ${
+                biometricEnabled
+                  ? 'bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100'
+                  : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm shadow-blue-500/25 hover:shadow-md'
+              }`}
+            >
+              {isTogglingBiometric
+                ? 'Updating...'
+                : biometricEnabled
+                ? 'Disable Biometrics'
+                : 'Enable Fingerprint / Face ID'}
+            </button>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              type="button"
+              onClick={() => lockSession()}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-800 hover:bg-blue-50 hover:border-blue-200 hover:text-blue-700 text-xs font-semibold transition-all min-h-[44px]"
+            >
+              <Lock className="w-4 h-4" />
+              <span>Lock Session Now</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => signOut()}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-slate-200 text-rose-700 hover:bg-rose-50 hover:border-rose-200 text-xs font-semibold transition-all min-h-[44px]"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Sign Out</span>
+            </button>
+          </div>
+        </GlassCard>
+
+        {/* Section 3: Android Companion Sync Token */}
+        <GlassCard className="p-5 sm:p-6 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                <KeyRound className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                  Android Companion Sync Token
+                </h3>
+                <p className="text-xs text-slate-500 font-medium">
+                  Connect the Monzi Android SMS app to your personal isolated account
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200/70 space-y-2">
+              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                Production Sync Endpoint URL
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-xs font-mono bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-800 truncate">
+                  {PRODUCTION_SYNC_URL}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => handleCopyText(PRODUCTION_SYNC_URL, 'Sync URL')}
+                  className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 text-xs font-semibold inline-flex items-center gap-1.5 min-h-[40px]"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200/70 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  Personal Device Sync Token
+                </p>
+                <button
+                  type="button"
+                  onClick={handleRegenerateSyncToken}
+                  disabled={isRegeneratingToken}
+                  className="text-[11px] font-semibold text-blue-600 hover:text-blue-700 inline-flex items-center gap-1 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isRegeneratingToken ? 'animate-spin' : ''}`} />
+                  <span>{isRegeneratingToken ? 'Regenerating...' : 'Regenerate'}</span>
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-xs font-mono bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-800 truncate">
+                  {deviceSyncToken
+                    ? showSyncToken
+                      ? deviceSyncToken
+                      : `${deviceSyncToken.slice(0, 8)}••••••••••••••••${deviceSyncToken.slice(-6)}`
+                    : 'Generating token...'}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => setShowSyncToken((v) => !v)}
+                  className="p-2 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 min-h-[40px] min-w-[40px] flex items-center justify-center"
+                  aria-label={showSyncToken ? 'Hide token' : 'Show token'}
+                >
+                  {showSyncToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCopyText(deviceSyncToken, 'Sync token')}
+                  disabled={!deviceSyncToken}
+                  className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 text-xs font-semibold inline-flex items-center gap-1.5 min-h-[40px] disabled:opacity-50"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </GlassCard>
+
+        {/* Section 4: SMS & Automation */}
         <GlassCard className="p-5 sm:p-6 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -462,7 +749,9 @@ export default function SettingsPage() {
                 <MessageSquare className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-sm sm:text-base font-bold text-slate-900">SMS &amp; Automation</h3>
+                <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                  SMS &amp; Automation
+                </h3>
                 <p className="text-xs text-slate-500 font-medium">
                   Auto-detect and parse Indian bank debit &amp; credit SMS
                 </p>
@@ -479,7 +768,9 @@ export default function SettingsPage() {
 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl bg-slate-50/80 border border-slate-200/70">
             <div>
-              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Last Sync</p>
+              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                Last Sync
+              </p>
               <p className="text-xs font-semibold text-slate-800 mt-0.5">{lastSyncText}</p>
             </div>
 
@@ -502,7 +793,7 @@ export default function SettingsPage() {
           </div>
         </GlassCard>
 
-        {/* Section 3: Bank Accounts Summary */}
+        {/* Section 5: Bank Accounts Summary */}
         <GlassCard className="p-5 sm:p-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -530,7 +821,7 @@ export default function SettingsPage() {
           </div>
         </GlassCard>
 
-        {/* Section 4: Categories */}
+        {/* Section 6: Categories */}
         <GlassCard className="p-5 sm:p-6 space-y-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
@@ -544,7 +835,6 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Inline Add Category Form */}
           <form
             onSubmit={handleAddCategory}
             className="p-4 rounded-xl bg-slate-50/80 border border-slate-200/70 space-y-3"
@@ -586,7 +876,9 @@ export default function SettingsPage() {
                   key={c}
                   onClick={() => setNewCatColor(c)}
                   className={`w-7 h-7 rounded-full shrink-0 transition-transform ${
-                    newCatColor === c ? 'scale-110 ring-2 ring-slate-900 ring-offset-2' : 'opacity-80 hover:opacity-100'
+                    newCatColor === c
+                      ? 'scale-110 ring-2 ring-slate-900 ring-offset-2'
+                      : 'opacity-80 hover:opacity-100'
                   }`}
                   style={{ backgroundColor: c }}
                   aria-label={`Select color ${c}`}
@@ -595,7 +887,6 @@ export default function SettingsPage() {
             </div>
           </form>
 
-          {/* Category List */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {categories.map((c) => (
               <div
@@ -629,7 +920,7 @@ export default function SettingsPage() {
           </div>
         </GlassCard>
 
-        {/* Section 5: App & PWA */}
+        {/* Section 7: App & PWA */}
         <GlassCard className="p-5 sm:p-6 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -644,7 +935,6 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            {/* Supabase health badge */}
             <button
               onClick={checkHealth}
               disabled={isCheckingHealth}
@@ -674,7 +964,9 @@ export default function SettingsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200/70 flex items-center justify-between gap-3">
               <div>
-                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Install App</p>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  Install App
+                </p>
                 <p className="text-xs font-bold text-slate-800 mt-0.5">
                   {isInstalled
                     ? 'Installed (Standalone)'
@@ -696,8 +988,12 @@ export default function SettingsPage() {
 
             <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200/70 flex items-center justify-between gap-3">
               <div>
-                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Offline Cache</p>
-                <p className="text-xs font-bold text-slate-800 mt-0.5">Service Worker Assets</p>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  Offline Cache
+                </p>
+                <p className="text-xs font-bold text-slate-800 mt-0.5">
+                  Service Worker Assets
+                </p>
               </div>
               <button
                 onClick={handleClearCache}
@@ -710,7 +1006,7 @@ export default function SettingsPage() {
           </div>
         </GlassCard>
 
-        {/* Section 6: Data & Privacy */}
+        {/* Section 8: Data & Privacy */}
         <GlassCard className="p-5 sm:p-6 space-y-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
@@ -719,7 +1015,7 @@ export default function SettingsPage() {
             <div>
               <h3 className="text-sm sm:text-base font-bold text-slate-900">Data &amp; Privacy</h3>
               <p className="text-xs text-slate-500 font-medium">
-                Export your ledger as CSV or wipe all account &amp; transaction records
+                Export your personal ledger as CSV or clear your account&apos;s financial data
               </p>
             </div>
           </div>
@@ -739,13 +1035,13 @@ export default function SettingsPage() {
               className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-rose-600 text-white hover:bg-rose-700 text-xs font-semibold shadow-sm shadow-rose-500/20 active:scale-95 transition-all min-h-[44px]"
             >
               <AlertTriangle className="w-4 h-4" />
-              <span>Reset All Data</span>
+              <span>Reset My Data</span>
             </button>
           </div>
         </GlassCard>
       </div>
 
-      {/* Reset All Data Confirmation Modal */}
+      {/* Reset All Data Confirmation Modal (Authenticated, requires typing RESET) */}
       {isResetModalOpen && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-md p-3 sm:p-6 flex items-center justify-center min-h-screen animate-fade-in">
           <div
@@ -760,8 +1056,10 @@ export default function SettingsPage() {
                   <AlertTriangle className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-slate-900">Reset All Data?</h3>
-                  <p className="text-xs text-slate-500">Deletes all transactions and accounts</p>
+                  <h3 className="text-base font-bold text-slate-900">Reset Your Data?</h3>
+                  <p className="text-xs text-slate-500">
+                    Deletes your transactions, accounts &amp; SMS logs
+                  </p>
                 </div>
               </div>
               <button
@@ -774,35 +1072,38 @@ export default function SettingsPage() {
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              This will permanently delete all transactions and bank accounts from Supabase. Your categories will be preserved.
+              This will permanently delete all transactions, bank accounts, and SMS processing logs belonging to your account. Categories and your login will be preserved.
             </p>
 
             <form onSubmit={handleResetAllData} className="space-y-4">
               <div>
                 <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1.5">
-                  Sync Secret (x-monzi-secret)
+                  Type RESET to confirm
                 </label>
                 <input
-                  type="password"
+                  type="text"
                   required
-                  placeholder="Enter MONZI_SYNC_SECRET"
-                  value={resetSecretInput}
-                  onChange={(e) => setResetSecretInput(e.target.value)}
-                  className={`${inputCls} w-full min-h-[44px]`}
+                  placeholder="RESET"
+                  value={resetConfirmInput}
+                  onChange={(e) => setResetConfirmInput(e.target.value)}
+                  className={`${inputCls} w-full min-h-[44px] font-mono`}
                 />
               </div>
 
               <div className="flex gap-2">
                 <button
                   type="submit"
-                  disabled={isResetting}
-                  className="flex-1 py-3 rounded-xl bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 active:scale-95 transition-all min-h-[44px] disabled:opacity-60"
+                  disabled={isResetting || resetConfirmInput.trim().toUpperCase() !== 'RESET'}
+                  className="flex-1 py-3 rounded-xl bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 active:scale-95 transition-all min-h-[44px] disabled:opacity-50"
                 >
-                  {isResetting ? 'Resetting...' : 'Yes, Reset Everything'}
+                  {isResetting ? 'Resetting...' : 'Yes, Reset My Data'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setIsResetModalOpen(false)}
+                  onClick={() => {
+                    setIsResetModalOpen(false);
+                    setResetConfirmInput('');
+                  }}
                   className="px-4 py-3 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 min-h-[44px]"
                 >
                   Cancel

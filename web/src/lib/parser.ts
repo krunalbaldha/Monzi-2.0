@@ -2,13 +2,153 @@ import { ParsedTransaction } from '@/lib/types';
 
 /**
  * Production-Grade Intelligent Parser for Indian Financial Bank SMS messages.
- * Handles 20+ banks: HDFC, ICICI, SBI, Axis, Kotak, PNB, BoB, IndusInd,
- * Yes Bank, Federal, Canara, Union, Indian Bank, Central Bank, IDFC First,
- * AU Small Finance, RBL, StanChart, HSBC, Citibank, PhonePe, GPay, Paytm, Amazon Pay
+ * Handles 30+ Indian banks, UPI services, and card providers:
+ * HDFC, ICICI, SBI, Axis, Kotak, PNB, BoB, IndusInd, Yes Bank, Federal,
+ * Canara, Union, Indian Bank, Central Bank, IDFC First, AU Small Finance,
+ * RBL, StanChart, HSBC, Citibank, BOI, IOB, UCO, Bandhan, Karnataka,
+ * South Indian Bank, DBS, Amex, OneCard, PhonePe, GPay, Paytm, Amazon Pay.
  */
 
-// Re-export ParsedTransaction from types so existing imports still work
 export type { ParsedTransaction } from '@/lib/types';
+
+export interface SmsInspectionResult {
+  parsed: ParsedTransaction | null;
+  status: 'VALID' | 'IGNORED' | 'FAILED';
+  reason?: string;
+}
+
+const MONTH_MAP: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
+
+function buildIsoFromParts(
+  year: number,
+  month: number,
+  day: number,
+  hour = 12,
+  minute = 0,
+  second = 0
+): string | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+    hour = 12;
+    minute = 0;
+    second = 0;
+  }
+
+  const fullYear = year < 100 ? 2000 + year : year;
+  if (fullYear < 2000 || fullYear > 2100) return null;
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const isoCandidate = `${fullYear}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:${pad(second)}+05:30`;
+  const d = new Date(isoCandidate);
+  if (isNaN(d.getTime())) return null;
+
+  // Verify calendar rollover did not happen (e.g. Feb 31)
+  const istCheck = new Date(d.getTime() + 5.5 * 60 * 60 * 1000);
+  if (istCheck.getUTCMonth() + 1 !== month || istCheck.getUTCDate() !== day) {
+    return null;
+  }
+  return d.toISOString();
+}
+
+/**
+ * Extracts explicit transaction date (and optional time) from an Indian bank SMS body.
+ * Supports formats like 25-Nov-26, 25 Nov 2026, 25/11/2026, 25-11-26, 2026-11-25.
+ */
+export function extractTransactionDate(text: string, fallbackDate?: string | Date): string {
+  const clean = text.replace(/[\r\n]+/g, ' ').trim();
+
+  let hour = 12;
+  let minute = 0;
+  let second = 0;
+  let hasExplicitTime = false;
+
+  const timeMatch = clean.match(/\b(?:at\s+)?([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\s*(AM|PM))?\b/i);
+  if (timeMatch) {
+    let h = parseInt(timeMatch[1], 10);
+    const m = parseInt(timeMatch[2], 10);
+    const s = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
+    const ampm = timeMatch[4]?.toUpperCase();
+    if (ampm === 'PM' && h < 12) h += 12;
+    if (ampm === 'AM' && h === 12) h = 0;
+    hour = h;
+    minute = m;
+    second = s;
+    hasExplicitTime = true;
+  }
+
+  // If no explicit time in SMS, reuse time from fallbackTimestamp if available
+  const fallbackObj = fallbackDate ? new Date(fallbackDate) : null;
+  if (!hasExplicitTime && fallbackObj && !isNaN(fallbackObj.getTime())) {
+    const istFallback = new Date(fallbackObj.getTime() + 5.5 * 60 * 60 * 1000);
+    hour = istFallback.getUTCHours();
+    minute = istFallback.getUTCMinutes();
+    second = istFallback.getUTCSeconds();
+  }
+
+  // 1. DD-MMM-YY or DD MMM YYYY (e.g. 25-Nov-26, 25 Nov 2026, 05-Jan-2025)
+  const dmyAlpha = clean.match(
+    /\b(\d{1,2})[\s\-\/](Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[,\s\-\/]+(\d{2,4})\b/i
+  );
+  if (dmyAlpha) {
+    const day = parseInt(dmyAlpha[1], 10);
+    const month = MONTH_MAP[dmyAlpha[2].toLowerCase()];
+    const year = parseInt(dmyAlpha[3], 10);
+    if (month) {
+      const iso = buildIsoFromParts(year, month, day, hour, minute, second);
+      if (iso) return iso;
+    }
+  }
+
+  // 2. YYYY-MM-DD or YYYY/MM/DD
+  const ymdNumeric = clean.match(/\b(20\d{2})[\-\/](\d{1,2})[\-\/](\d{1,2})\b/);
+  if (ymdNumeric) {
+    const year = parseInt(ymdNumeric[1], 10);
+    const month = parseInt(ymdNumeric[2], 10);
+    const day = parseInt(ymdNumeric[3], 10);
+    const iso = buildIsoFromParts(year, month, day, hour, minute, second);
+    if (iso) return iso;
+  }
+
+  // 3. DD/MM/YYYY or DD-MM-YYYY or DD-MM-YY or DD.MM.YYYY (Indian convention: DD first)
+  const dmyNumeric = clean.match(/\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})\b/);
+  if (dmyNumeric) {
+    const day = parseInt(dmyNumeric[1], 10);
+    const month = parseInt(dmyNumeric[2], 10);
+    const year = parseInt(dmyNumeric[3], 10);
+    const iso = buildIsoFromParts(year, month, day, hour, minute, second);
+    if (iso) return iso;
+  }
+
+  if (fallbackObj && !isNaN(fallbackObj.getTime())) {
+    return fallbackObj.toISOString();
+  }
+  return new Date().toISOString();
+}
 
 /**
  * Maps merchant name / description to a category string.
@@ -16,115 +156,280 @@ export type { ParsedTransaction } from '@/lib/types';
 export function classifyMerchant(merchant: string, description: string = ''): string {
   const haystack = `${merchant} ${description}`.toLowerCase();
 
-  if (/swiggy|zomato|dunzo|mcdonald|kfc|dominos|domino|starbucks|burger king|pizzahut|fassos|barbeque|cafe|restaurant|biryani|chai|food/.test(haystack))
+  if (
+    /swiggy|zomato|dunzo|mcdonald|kfc|dominos|domino|starbucks|burger king|pizzahut|fassos|barbeque|cafe|restaurant|biryani|chai|food|eatclub|haldiram/.test(
+      haystack
+    )
+  ) {
     return 'Food & Dining';
+  }
 
-  if (/amazon|flipkart|myntra|ajio|nykaa|meesho|snapdeal|shopclues|tatacliq|bewakoof/.test(haystack))
+  if (/amazon|flipkart|myntra|ajio|nykaa|meesho|snapdeal|shopclues|tatacliq|bewakoof|croma|reliance digital/.test(haystack)) {
     return 'Shopping';
+  }
 
-  if (/uber|ola|rapido|irctc|makemytrip|redbus|hpcl|bpcl|indianoil|hp petrol|petrol|fuel|indigo|spicejet|goair|vistara|abhibus|yatra/.test(haystack))
+  if (
+    /uber|ola|rapido|irctc|makemytrip|redbus|hpcl|bpcl|indianoil|hp petrol|petrol|fuel|diesel|fastag|indigo|spicejet|goair|vistara|air india|abhibus|yatra|metro/.test(
+      haystack
+    )
+  ) {
     return 'Travel & Transport';
+  }
 
-  if (/bsnl|jio|airtel|vodafone|\bvi\b|idea|electricity|bescom|mseb|tata power|cesc|adani electricity|wesco|nesco|gas|water bill|postpaid|broadband|internet/.test(haystack))
+  if (
+    /bsnl|jio|airtel|vodafone|\bvi\b|idea|electricity|bescom|mseb|tata power|cesc|adani electricity|wesco|nesco|gas|water bill|postpaid|broadband|internet|recharge|dth/.test(
+      haystack
+    )
+  ) {
     return 'Bills & Utilities';
+  }
 
-  if (/netflix|spotify|hotstar|disney|prime video|youtube|zee5|sonyliv|apple music|gaana|wynk/.test(haystack))
+  if (/netflix|spotify|hotstar|disney|prime video|youtube|zee5|sonyliv|apple music|gaana|wynk|bookmyshow/.test(haystack)) {
     return 'Entertainment & Subscriptions';
+  }
 
-  if (/pharmacy|medplus|apollo|practo|1mg|netmeds|hospital|clinic|health|doctor|diagnostic|lab test|lybrate/.test(haystack))
+  if (/pharmacy|medplus|apollo|practo|1mg|netmeds|hospital|clinic|health|doctor|diagnostic|lab test|lybrate|pharmeasy/.test(haystack)) {
     return 'Healthcare & Medical';
+  }
 
-  if (/zerodha|groww|upstox|mutual fund|\bmf\b|\bsip\b|\bnps\b|stock|shares|icicidirect|hdfc securities|kotak securities|motilal|angel broking|smallcase/.test(haystack))
+  if (
+    /zerodha|groww|upstox|mutual fund|\bmf\b|\bsip\b|\bnps\b|stock|shares|icicidirect|hdfc securities|kotak securities|motilal|angel broking|smallcase|kuvera/.test(
+      haystack
+    )
+  ) {
     return 'Investments';
+  }
 
-  if (/bigbasket|blinkit|grofers|dmart|jiomart|reliance fresh|more supermarket|nature basket|supermarket|grocery|vegetables|fruits/.test(haystack))
+  if (
+    /bigbasket|blinkit|zepto|instamart|grofers|dmart|jiomart|reliance fresh|more supermarket|nature basket|supermarket|grocery|vegetables|fruits/.test(
+      haystack
+    )
+  ) {
     return 'Groceries';
+  }
 
-  if (/salary|payroll|ctc|wages/.test(haystack))
+  if (/salary|payroll|ctc|wages|stipend/.test(haystack)) {
     return 'Salary';
+  }
 
-  if (/\bemi\b|loan emi|equated monthly|home loan|car loan|personal loan/.test(haystack))
+  if (/\bemi\b|loan emi|equated monthly|home loan|car loan|personal loan/.test(haystack)) {
     return 'Bills & Utilities';
+  }
 
-  if (/refund|reversal|returned|cashback|reward credited/.test(haystack))
+  if (/refund|reversal|returned|cashback|reward credited/.test(haystack)) {
     return 'Other Income';
+  }
 
   return 'Other';
 }
 
-export function parseBankSms(body: string, sender: string = ''): ParsedTransaction | null {
-  if (!body || typeof body !== 'string') return null;
-  const text = body.replace(/[\r\n]+/g, ' ').trim();
+export function identifyIndianBank(text: string, sender: string = ''): string {
+  const combined = `${sender} ${text}`.toUpperCase();
 
-  // 1. Drop Non-Financial: OTP, marketing
-  if (/\b(otp|one time password|verification code|secret code|login pin)\b/i.test(text)) return null;
-  if (/\b(pre-approved|apply now|congratulations|click here|limited period offer|discount coupon)\b/i.test(text)) return null;
+  if (combined.includes('HDFC')) return 'HDFC Bank';
+  if (combined.includes('ICICI')) return 'ICICI Bank';
+  if (combined.includes('SBI') || combined.includes('STATE BANK')) return 'State Bank of India';
+  if (combined.includes('AXIS')) return 'Axis Bank';
+  if (combined.includes('KOTAK')) return 'Kotak Bank';
+  if (combined.includes('PNB') || combined.includes('PUNJAB NATIONAL')) return 'Punjab National Bank';
+  if (combined.includes('BOB') || combined.includes('BANK OF BARODA')) return 'Bank of Baroda';
+  if (combined.includes('INDUSIND') || combined.includes('INDUSB')) return 'IndusInd Bank';
+  if (combined.includes('YESBANK') || combined.includes('YES BANK') || combined.includes('YESBNK')) return 'Yes Bank';
+  if (combined.includes('FEDERAL') || combined.includes('FEDFIN') || combined.includes('FEDBNK')) return 'Federal Bank';
+  if (combined.includes('CANARA') || combined.includes('CANBNK')) return 'Canara Bank';
+  if (combined.includes('UNION BANK') || combined.includes('UNIONBANK') || combined.includes('UNIONB')) return 'Union Bank of India';
+  if (combined.includes('INDIAN BANK') || combined.includes('INDIANBANK')) return 'Indian Bank';
+  if (combined.includes('CENTRAL BANK') || combined.includes('CENTBANK')) return 'Central Bank of India';
+  if (combined.includes('IDFC') || combined.includes('IDFCFB')) return 'IDFC First Bank';
+  if (combined.includes('AU SMALL') || combined.includes('AUBANK') || combined.includes('AU BANK')) return 'AU Small Finance Bank';
+  if (combined.includes('RBL') || combined.includes('RBLBNK')) return 'RBL Bank';
+  if (combined.includes('STANDARD CHARTERED') || combined.includes('SCBANK') || combined.includes('SCBL')) return 'Standard Chartered';
+  if (combined.includes('HSBC')) return 'HSBC';
+  if (combined.includes('CITI')) return 'Citibank India';
+  if (combined.includes('BANK OF INDIA') || combined.includes('BOIIND')) return 'Bank of India';
+  if (combined.includes('INDIAN OVERSEAS') || combined.includes('IOB')) return 'Indian Overseas Bank';
+  if (combined.includes('UCO BANK') || combined.includes('UCOBNK')) return 'UCO Bank';
+  if (combined.includes('BANDHAN')) return 'Bandhan Bank';
+  if (combined.includes('KARNATAKA BANK') || combined.includes('KTKBNK')) return 'Karnataka Bank';
+  if (combined.includes('SOUTH INDIAN') || combined.includes('SIB')) return 'South Indian Bank';
+  if (combined.includes('DBS') || combined.includes('DIGIBANK')) return 'DBS Bank';
+  if (combined.includes('AMEX') || combined.includes('AMERICAN EXPRESS')) return 'American Express';
+  if (combined.includes('ONECARD')) return 'OneCard';
+  if (combined.includes('SLICE')) return 'Slice';
+  if (combined.includes('JUPITER')) return 'Jupiter';
+  if (combined.includes('PHONEPE') || combined.includes('PHONPE')) return 'PhonePe';
+  if (combined.includes('GPAY') || combined.includes('GOOGLE PAY') || combined.includes('TEZ')) return 'Google Pay';
+  if (combined.includes('PAYTM')) return 'Paytm Bank';
+  if (combined.includes('AMAZON PAY') || combined.includes('AMAZONPAY')) return 'Amazon Pay';
 
-  // 2. Identify Direction
-  const isDebit = /\b(debited|spent|paid|withdrawn|sent|deducted|purchase|transfer to|trf to|done on|payment of|txn of|transaction of)\b/i.test(text);
-  const isCredit = /\b(credited|received|deposited|refunded|added to|refund of|credit of|money received)\b/i.test(text);
-  if (!isDebit && !isCredit) return null;
-  const direction: 'CREDIT' | 'DEBIT' = isDebit ? 'DEBIT' : 'CREDIT';
+  return 'Bank';
+}
 
-  // 3. Extract Amount
+/**
+ * Inspects an SMS message with strict financial filtering and returns either
+ * a valid ParsedTransaction or a structured IGNORED/FAILED reason (never storing raw SMS).
+ */
+export function inspectBankSms(
+  body: string,
+  sender: string = '',
+  fallbackTimestamp?: string | Date
+): SmsInspectionResult {
+  if (!body || typeof body !== 'string' || !body.trim()) {
+    return { parsed: null, status: 'IGNORED', reason: 'Empty SMS message' };
+  }
+
+  const text = body.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // 1. Strictly ignore OTP / verification codes
+  if (
+    /\b(otp|one[\s-]?time[\s-]?password|verification code|secret code|login pin|mpin|tpin|passcode|security code|2fa|auth code)\b/i.test(
+      text
+    ) ||
+    /\bis your\s+\d{4,8}\b/i.test(text)
+  ) {
+    return { parsed: null, status: 'IGNORED', reason: 'OTP or verification code filtered out' };
+  }
+
+  // 2. Strictly ignore Promotional / Marketing / Pre-approved offers
+  if (
+    /\b(pre-?approved|apply now|congratulations|click here|limited period offer|discount coupon|avail loan|instant loan|zero processing|credit limit increase|exciting offers|exclusive offer|shop now|win up to|flat \d+% off|refer & earn|claim now|cashback offer|subscribe now|unsubscribe|bit\.ly|tinyurl)\b/i.test(
+      text
+    )
+  ) {
+    return { parsed: null, status: 'IGNORED', reason: 'Promotional or marketing message ignored' };
+  }
+
+  // 3. Strictly ignore Login / Security alerts
+  if (
+    /\b(logged in|login alert|successful login|new device login|session started|password changed|mpin changed|pin changed|pin reset|pin generated|biometric enabled)\b/i.test(
+      text
+    )
+  ) {
+    return { parsed: null, status: 'IGNORED', reason: 'Login or security alert ignored' };
+  }
+
+  // 4. Strictly ignore Failed / Declined / Unsuccessful transactions
+  if (
+    /\b(transaction failed|txn failed|payment failed|has failed|could not be processed|was declined|card declined|declined due to|unsuccessful|failed transaction|insufficient balance|insufficient funds|timed out|exceeded limit|invalid pin)\b/i.test(
+      text
+    )
+  ) {
+    return { parsed: null, status: 'FAILED', reason: 'Failed or declined transaction ignored' };
+  }
+
+  // 5. Strictly ignore General Bank Notices (KYC, statement ready, cheque, mandate setup/pause, EMI reminders without debit)
+  if (
+    /\b(update your kyc|re-?kyc|kyc pending|kyc expired|statement is ready|e-?statement|monthly statement|cheque book|cheque issued|cheque bounced|mandate created|mandate paused|mandate revoked|mandate cancelled|autopay registered|e-?mandate.*registered|emi reminder|payment reminder|bill is due|due date|minimum amount due|total amount due|will be debited|to be debited|scheduled to be debited|upcoming emi)\b/i.test(
+      text
+    )
+  ) {
+    return { parsed: null, status: 'IGNORED', reason: 'General bank notice or reminder ignored' };
+  }
+
+  // 6. Identify Credit/Debit Action (must be a real financial movement)
+  const isRefundKeyword = /\b(refund|refunded|reversal|reversed back|money back|cashback)\b/i.test(text);
+  const isDebit = /\b(debited|spent|paid|withdrawn|sent|deducted|purchase|transfer to|trf to|done on|payment of|txn of|transaction of|charged|auto-?debited)\b/i.test(
+    text
+  );
+  const isCredit =
+    /\b(credited|received|deposited|refunded|added to|refund of|credit of|money received|reversed to|credited back)\b/i.test(
+      text
+    ) ||
+    (isRefundKeyword && /\b(to your|a\/c|account|card|wallet)\b/i.test(text) && !isDebit);
+
+  if (!isDebit && !isCredit) {
+    if (/\b(avl bal|avail bal|available balance|updated balance|account balance|clear balance|closing balance)\b/i.test(text)) {
+      return {
+        parsed: null,
+        status: 'IGNORED',
+        reason: 'Balance-only notification without debit or credit action',
+      };
+    }
+    return {
+      parsed: null,
+      status: 'IGNORED',
+      reason: 'No valid CREDIT or DEBIT transaction action detected',
+    };
+  }
+
+  // When both words appear (e.g. "Refund of Rs 500 credited for order paid via..."), prefer explicit credit/refund
+  const direction: 'CREDIT' | 'DEBIT' =
+    isCredit && (isRefundKeyword || /\b(credited|deposited|received|credit of)\b/i.test(text))
+      ? 'CREDIT'
+      : isDebit
+      ? 'DEBIT'
+      : 'CREDIT';
+
+  // 7. Extract Amount (must have monetary value)
   let amount: number | null = null;
   const amountRegexes = [
     /(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)/i,
-    /(?:debited by|credited with|credit of|debit of|transaction of(?:\s*(?:inr|rs\.?|₹))?)\s*([\d,]+(?:\.\d{1,2})?)/i,
-    /(?:for\s*(?:inr|rs\.?|₹)?\s*|by\s*)([\d,]+(?:\.\d{1,2})?)/i,
+    /(?:debited by|credited with|credit of|debit of|refund of|transaction of(?:\s*(?:inr|rs\.?|₹))?)\s*([\d,]+(?:\.\d{1,2})?)/i,
+    /([\d,]+(?:\.\d{1,2})?)\s*(?:debited|credited|spent|paid|withdrawn)/i,
   ];
   for (const rx of amountRegexes) {
     const m = text.match(rx);
     if (m) {
       const parsed = parseFloat(m[1].replace(/,/g, ''));
-      if (!isNaN(parsed) && parsed > 0) { amount = parsed; break; }
+      if (!isNaN(parsed) && parsed > 0) {
+        amount = parsed;
+        break;
+      }
     }
   }
-  if (amount === null) return null;
+  if (amount === null) {
+    return { parsed: null, status: 'IGNORED', reason: 'No valid monetary amount found in SMS' };
+  }
 
-  // 4. Extract Account Mask
+  // 8. Extract Account / Card Mask
   let accountMask = 'XX0000';
   const accPatterns = [
-    /(?:a\/c|acct|account|ac)\s*(?:no\.?)?\s*(?:ending\s*)?[xX*]*([0-9]{3,6})/i,
-    /(?:card)\s+(?:ending\s+)?[xX*]*([0-9]{4})/i,
-    /(?:xxxx|XX)([0-9]{4})/i,
+    /(?:a\/c|acct|account|ac)\s*(?:no\.?)?\s*(?:ending\s*(?:with\s*)?)?[xX*]*([0-9]{3,6})/i,
+    /(?:card)\s+(?:ending\s*(?:with\s*)?)?[xX*]*([0-9]{4})/i,
+    /(?:xxxx|XX|\*{2,4})([0-9]{4})/i,
   ];
   for (const p of accPatterns) {
     const m = text.match(p);
-    if (m) { accountMask = `XX${m[1]}`; break; }
+    if (m) {
+      accountMask = `XX${m[1]}`;
+      break;
+    }
   }
 
-  // 5. Available Balance
+  // 9. Available Balance
   let parsedBalance: number | undefined;
-  const balMatch = text.match(/(?:avl bal|avail bal|available balance|avl\. bal|bal(?:ance)?)\s*(?:is|:)?\s*(?:rs\.?|inr|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i);
+  const balMatch = text.match(
+    /(?:avl bal|avail bal|available balance|avl\. bal|clear bal|bal(?:ance)?)\s*(?:is|:)?\s*(?:rs\.?|inr|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i
+  );
   if (balMatch) {
     const v = parseFloat(balMatch[1].replace(/,/g, ''));
     if (!isNaN(v)) parsedBalance = v;
   }
 
-  // 6. Reference ID
+  // 10. Reference ID
   let referenceId: string | undefined;
-  const refMatch = text.match(/(?:upi ref(?:\s*no\.?)?|ref(?:\s*no\.?)?|utr(?:\s*no\.?)?|rrn|reference)\s*:?\s*([a-zA-Z0-9]{8,24})/i);
+  const refMatch = text.match(
+    /(?:upi\s*ref(?:\s*no\.?)?|ref(?:\s*no\.?)?|utr(?:\s*no\.?)?|rrn|reference(?:\s*no\.?)?)\s*:?\s*([a-zA-Z0-9]{6,24})/i
+  );
   if (refMatch) referenceId = refMatch[1];
 
-  // 7. Payment Mode
+  // 11. Payment Mode
   let paymentMode = 'OTHER';
   if (/\bupi\b/i.test(text)) paymentMode = 'UPI';
-  else if (/\b(atm|wdl)\b/i.test(text)) paymentMode = 'ATM';
-  else if (/\b(card|pos)\b/i.test(text)) paymentMode = 'CARD';
+  else if (/\b(atm|wdl|cash withdrawal)\b/i.test(text)) paymentMode = 'ATM';
+  else if (/\b(card|pos|debit card|credit card)\b/i.test(text)) paymentMode = 'CARD';
   else if (/\bneft\b/i.test(text)) paymentMode = 'NEFT';
   else if (/\bimps\b/i.test(text)) paymentMode = 'IMPS';
   else if (/\brtgs\b/i.test(text)) paymentMode = 'RTGS';
   else if (/\bnetbanking\b/i.test(text)) paymentMode = 'NETBANKING';
 
-  // 8. Merchant Extraction — priority order
+  // 12. Merchant Extraction
   let merchant: string | undefined;
-
-  // Pattern 1: "to [MERCHANT]" / "at [MERCHANT]" / "towards [MERCHANT]" (skip if immediately followed by VPA)
-  const toAtMatch = text.match(/\b(?:to|at|towards)\s+(?!VPA\b)([A-Za-z0-9][A-Za-z0-9\s._\-&]{2,34}?)(?=\s+(?:on|ref|avl|bal|via|using|dated|from|a\/c|utr|upi|info)\b|[.,;]|$)/i);
+  const toAtMatch = text.match(
+    /\b(?:to|at|towards|from)\s+(?!VPA\b|A\/c\b|Account\b|your\b)([A-Za-z0-9][A-Za-z0-9\s._\-&]{2,34}?)(?=\s+(?:on|ref|avl|bal|via|using|dated|from|a\/c|utr|upi|info|for|has|was|is)\b|[.,;]|$)/i
+  );
   if (toAtMatch) merchant = toAtMatch[1].trim();
 
-  // Pattern 2: "VPA [name@bank]" — extract UPI VPA and clean it up
   if (!merchant) {
     const vpaMatch = text.match(/\bVPA\s+([A-Za-z0-9._\-]+@[A-Za-z0-9.\-]+)/i);
     if (vpaMatch) {
@@ -132,15 +437,17 @@ export function parseBankSms(body: string, sender: string = ''): ParsedTransacti
     }
   }
 
-  // Pattern 3: "info: [MERCHANT]" / "trf to [MERCHANT]"
   if (!merchant) {
-    const infoMatch = text.match(/\b(?:info:|trf to|info\s*-)\s*([A-Za-z0-9][A-Za-z0-9\s._\-&]{2,34}?)(?=\s+(?:ref|utr|on|avl|bal)\b|[.,;]|$)/i);
+    const infoMatch = text.match(
+      /\b(?:info:|trf to|info\s*-)\s*([A-Za-z0-9][A-Za-z0-9\s._\-&]{2,34}?)(?=\s+(?:ref|utr|on|avl|bal)\b|[.,;]|$)/i
+    );
     if (infoMatch) merchant = infoMatch[1].trim();
   }
 
-  // Fallback broader match
   if (!merchant) {
-    const broadMatch = text.match(/(?:to|at|info|towards)\s+([A-Za-z0-9\s._@\-]{3,35}?)(?:\s+(?:on|ref|avl|bal|via|using|dated|\.))/i);
+    const broadMatch = text.match(
+      /(?:to|at|info|towards)\s+([A-Za-z0-9\s._@\-]{3,35}?)(?:\s+(?:on|ref|avl|bal|via|using|dated|\.))/i
+    );
     if (broadMatch) merchant = broadMatch[1].trim();
   }
 
@@ -153,77 +460,63 @@ export function parseBankSms(body: string, sender: string = ''): ParsedTransacti
     if (merchant.length > 40) merchant = merchant.slice(0, 40).trim();
   }
 
-  // 9. Bank Identification
-  let bankName = 'Bank';
-  const combined = `${sender} ${text}`.toUpperCase();
+  // 13. Bank Identification
+  const bankName = identifyIndianBank(text, sender);
 
-  if (combined.includes('HDFC')) bankName = 'HDFC Bank';
-  else if (combined.includes('ICICI')) bankName = 'ICICI Bank';
-  else if (combined.includes('SBI') || combined.includes('STATE BANK')) bankName = 'State Bank of India';
-  else if (combined.includes('AXIS')) bankName = 'Axis Bank';
-  else if (combined.includes('KOTAK')) bankName = 'Kotak Bank';
-  else if (combined.includes('PNB') || combined.includes('PUNJAB NATIONAL')) bankName = 'Punjab National Bank';
-  else if (combined.includes('BOB') || combined.includes('BANK OF BARODA')) bankName = 'Bank of Baroda';
-  else if (combined.includes('INDUSIND')) bankName = 'IndusInd Bank';
-  else if (combined.includes('YESBANK') || combined.includes('YES BANK')) bankName = 'Yes Bank';
-  else if (combined.includes('FEDERAL') || combined.includes('FEDFIN')) bankName = 'Federal Bank';
-  else if (combined.includes('CANARA') || combined.includes('CANARABANK')) bankName = 'Canara Bank';
-  else if (combined.includes('UNION BANK') || combined.includes('UNIONBANK')) bankName = 'Union Bank of India';
-  else if (combined.includes('INDIAN BANK') || combined.includes('INDIANBANK')) bankName = 'Indian Bank';
-  else if (combined.includes('CENTRAL BANK') || combined.includes('CENTBANK')) bankName = 'Central Bank of India';
-  else if (combined.includes('IDFC') || combined.includes('IDFCFIRST')) bankName = 'IDFC First Bank';
-  else if (combined.includes('AU SMALL') || combined.includes('AUBANK') || combined.includes('AU BANK')) bankName = 'AU Small Finance Bank';
-  else if (combined.includes('RBL') || combined.includes('RBLBANK')) bankName = 'RBL Bank';
-  else if (combined.includes('STANDARD CHARTERED') || combined.includes('SCBANK') || combined.includes('SCBL')) bankName = 'Standard Chartered';
-  else if (combined.includes('HSBC')) bankName = 'HSBC';
-  else if (combined.includes('CITI') || combined.includes('CITIBANK')) bankName = 'Citibank India';
-  else if (combined.includes('PHONEPE')) bankName = 'PhonePe';
-  else if (combined.includes('GPAY') || combined.includes('GOOGLE PAY') || combined.includes('TEZ')) bankName = 'Google Pay';
-  else if (combined.includes('PAYTM')) bankName = 'Paytm Bank';
-  else if (combined.includes('AMAZON PAY') || combined.includes('AMAZONPAY')) bankName = 'Amazon Pay';
+  // 14. Extract True Transaction Date from SMS Body
+  const transactionDate = extractTransactionDate(text, fallbackTimestamp);
 
-  // 10. Special transaction flags
-  const isFailed = /\b(transaction failed|txn failed|reversed|declined|unsuccessful|failed transaction|could not)\b/i.test(text);
-  const isSelfTransfer = /\b(own account|self transfer|internal transfer|same bank)\b/i.test(text) ||
-    (/\bneft\b/i.test(text) && bankName !== 'Bank' && text.toUpperCase().includes(bankName.toUpperCase().split(' ')[0]));
+  // 15. Special transaction flags
+  const isSelfTransfer =
+    /\b(own account|self transfer|internal transfer|same bank)\b/i.test(text) ||
+    (/\bneft\b/i.test(text) &&
+      bankName !== 'Bank' &&
+      text.toUpperCase().includes(bankName.toUpperCase().split(' ')[0]));
   const isCashback = /\b(cashback|reward credited|cashback received|reward points credited)\b/i.test(text);
-  const isRefund = /\b(refund|reversal|returned|money back)\b/i.test(text);
-  const isEmi = /\b(emi|loan emi|equated monthly)\b/i.test(text);
+  const isRefund = direction === 'CREDIT' && isRefundKeyword;
 
-  // 11. Financial Classification
+  // 16. Financial Classification
   let transactionType: ParsedTransaction['transaction_type'] = 'UNCLASSIFIED';
-
-  if (isFailed) {
-    transactionType = 'UNCLASSIFIED';
-  } else if (/credit card bill|card payment|cc payment|paid towards.*card/i.test(text)) {
+  if (/credit card bill|card payment|cc payment|paid towards.*card/i.test(text)) {
     transactionType = 'CC_BILL_PAYMENT';
   } else if (isSelfTransfer) {
     transactionType = 'TRANSFER';
+  } else if (isRefund) {
+    transactionType = 'REFUND';
   } else if (direction === 'CREDIT') {
     transactionType = 'INCOME';
-  } else if (isEmi) {
-    transactionType = 'EXPENSE';
   } else {
     transactionType = 'EXPENSE';
   }
 
-  // 12. Auto-classify category
   const category = classifyMerchant(merchant || '', text);
 
   return {
-    amount,
-    direction,
-    bank_name: bankName,
-    account_mask: accountMask,
-    merchant,
-    reference_id: referenceId,
-    payment_mode: paymentMode,
-    parsed_available_balance: parsedBalance,
-    transaction_type: transactionType,
-    transaction_category: category,
-    is_failed: isFailed,
-    is_self_transfer: isSelfTransfer,
-    is_cashback: isCashback,
-    is_refund: isRefund,
+    status: 'VALID',
+    parsed: {
+      amount,
+      direction,
+      bank_name: bankName,
+      account_mask: accountMask,
+      merchant,
+      reference_id: referenceId,
+      payment_mode: paymentMode,
+      parsed_available_balance: parsedBalance,
+      transaction_date: transactionDate,
+      transaction_type: transactionType,
+      transaction_category: category,
+      is_failed: false,
+      is_self_transfer: isSelfTransfer,
+      is_cashback: isCashback,
+      is_refund: isRefund,
+    },
   };
+}
+
+export function parseBankSms(
+  body: string,
+  sender: string = '',
+  fallbackTimestamp?: string | Date
+): ParsedTransaction | null {
+  return inspectBankSms(body, sender, fallbackTimestamp).parsed;
 }

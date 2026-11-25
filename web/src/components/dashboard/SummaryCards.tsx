@@ -1,14 +1,27 @@
 'use client';
 
 import React from 'react';
-import { Wallet, TrendingUp, TrendingDown, PiggyBank, ArrowUpRight, ArrowDownRight, Minus } from 'lucide-react';
+import {
+  Wallet,
+  TrendingUp,
+  TrendingDown,
+  PiggyBank,
+  ArrowUpRight,
+  ArrowDownRight,
+  Minus,
+} from 'lucide-react';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { FinancialSummary } from '@/lib/types';
 
+export interface ExtendedFinancialSummary extends FinancialSummary {
+  total_income?: number;
+  total_expenses?: number;
+}
+
 interface SummaryCardsProps {
-  summary: FinancialSummary;
+  summary: ExtendedFinancialSummary;
   loading?: boolean;
 }
 
@@ -35,6 +48,8 @@ const formatInr = (val: number) =>
 export function SummaryCards({ summary, loading = false }: SummaryCardsProps) {
   const incomeGrowth = summary.income_change_pct || 0;
   const expenseGrowth = summary.expense_change_pct || 0;
+  const totalIncome = summary.total_income ?? summary.monthly_income;
+  const totalExpenses = summary.total_expenses ?? summary.monthly_expense;
 
   if (loading) {
     return (
@@ -63,11 +78,11 @@ export function SummaryCards({ summary, loading = false }: SummaryCardsProps) {
         </div>
         <div className="mt-2 flex items-center gap-1.5 text-[11px] sm:text-xs text-slate-500 font-medium">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-soft shrink-0" />
-          <span className="truncate">Active tracking</span>
+          <span className="truncate">Live account total</span>
         </div>
       </GlassCard>
 
-      {/* 2. Monthly Income */}
+      {/* 2. Monthly & Total Income */}
       <GlassCard className="p-4 sm:p-5 min-h-[100px] relative overflow-hidden">
         <div className="flex items-center justify-between mb-2.5 sm:mb-3">
           <span className="text-[11px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider">
@@ -80,28 +95,33 @@ export function SummaryCards({ summary, loading = false }: SummaryCardsProps) {
         <div className="text-lg sm:text-2xl font-bold tracking-tight text-emerald-600 font-mono leading-tight">
           <AnimatedNumber value={summary.monthly_income} format={formatInr} />
         </div>
-        <div className="mt-2 flex items-center gap-1 text-[11px] sm:text-xs font-medium">
-          {incomeGrowth !== 0 ? (
-            <>
-              {incomeGrowth > 0 ? (
-                <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-              ) : (
-                <ArrowDownRight className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-              )}
-              <span className={incomeGrowth > 0 ? 'text-emerald-700 truncate' : 'text-rose-600 truncate'}>
-                {incomeGrowth > 0 ? `+${incomeGrowth}%` : `${incomeGrowth}%`} vs last mo
-              </span>
-            </>
-          ) : (
-            <>
-              <Minus className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-              <span className="text-slate-400 truncate">This month</span>
-            </>
-          )}
+        <div className="mt-2 flex items-center justify-between gap-1 text-[11px] sm:text-xs font-medium">
+          <div className="flex items-center gap-1 min-w-0">
+            {incomeGrowth !== 0 ? (
+              <>
+                {incomeGrowth > 0 ? (
+                  <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                ) : (
+                  <ArrowDownRight className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                )}
+                <span className={incomeGrowth > 0 ? 'text-emerald-700 truncate' : 'text-rose-600 truncate'}>
+                  {incomeGrowth > 0 ? `+${incomeGrowth}%` : `${incomeGrowth}%`}
+                </span>
+              </>
+            ) : (
+              <>
+                <Minus className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <span className="text-slate-400 truncate">This mo</span>
+              </>
+            )}
+          </div>
+          <span className="text-[10px] text-slate-400 font-mono truncate hidden sm:inline">
+            All: {formatInr(totalIncome)}
+          </span>
         </div>
       </GlassCard>
 
-      {/* 3. Monthly Expenses */}
+      {/* 3. Monthly & Total Expenses */}
       <GlassCard className="p-4 sm:p-5 min-h-[100px] relative overflow-hidden">
         <div className="flex items-center justify-between mb-2.5 sm:mb-3">
           <span className="text-[11px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider">
@@ -114,24 +134,29 @@ export function SummaryCards({ summary, loading = false }: SummaryCardsProps) {
         <div className="text-lg sm:text-2xl font-bold tracking-tight text-rose-500 font-mono leading-tight">
           <AnimatedNumber value={summary.monthly_expense} format={formatInr} />
         </div>
-        <div className="mt-2 flex items-center gap-1 text-[11px] sm:text-xs font-medium">
-          {expenseGrowth !== 0 ? (
-            <>
-              {expenseGrowth > 0 ? (
-                <ArrowUpRight className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-              ) : (
-                <ArrowDownRight className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-              )}
-              <span className={expenseGrowth > 0 ? 'text-rose-600 truncate' : 'text-emerald-700 truncate'}>
-                {expenseGrowth > 0 ? `+${expenseGrowth}%` : `${expenseGrowth}%`} vs last mo
-              </span>
-            </>
-          ) : (
-            <>
-              <Minus className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-              <span className="text-slate-400 truncate">This month</span>
-            </>
-          )}
+        <div className="mt-2 flex items-center justify-between gap-1 text-[11px] sm:text-xs font-medium">
+          <div className="flex items-center gap-1 min-w-0">
+            {expenseGrowth !== 0 ? (
+              <>
+                {expenseGrowth > 0 ? (
+                  <ArrowUpRight className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                ) : (
+                  <ArrowDownRight className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                )}
+                <span className={expenseGrowth > 0 ? 'text-rose-600 truncate' : 'text-emerald-700 truncate'}>
+                  {expenseGrowth > 0 ? `+${expenseGrowth}%` : `${expenseGrowth}%`}
+                </span>
+              </>
+            ) : (
+              <>
+                <Minus className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <span className="text-slate-400 truncate">This mo</span>
+              </>
+            )}
+          </div>
+          <span className="text-[10px] text-slate-400 font-mono truncate hidden sm:inline">
+            All: {formatInr(totalExpenses)}
+          </span>
         </div>
       </GlassCard>
 
