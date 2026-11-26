@@ -352,13 +352,29 @@ export function inspectBankSms(
     };
   }
 
-  // When both words appear (e.g. "Refund of Rs 500 credited for order paid via..."), prefer explicit credit/refund
-  const direction: 'CREDIT' | 'DEBIT' =
-    isCredit && (isRefundKeyword || /\b(credited|deposited|received|credit of)\b/i.test(text))
-      ? 'CREDIT'
-      : isDebit
-      ? 'DEBIT'
-      : 'CREDIT';
+  const explicitSelfCredit =
+    /\b(credited\s+(?:to|in|into)\s+(?:your|ur|a\/c|acct|account|wallet|card)|credited\s+(?:with|by)|salary\s+credited|money\s+received|added\s+to\s+(?:your|ur|a\/c|account|wallet)|credited\s+back|reversed\s+to\s+(?:your|ur|a\/c|acct|account|card)|credit\s+of|deposited)\b/i.test(
+      text
+    );
+  const hasStrongDebitPhrase =
+    isDebit && /\b(debited|withdrawn|spent|purchase|auto-?debited)\b/i.test(text);
+  const hasOwnAccountCredit =
+    /\b(?:credited|reversed)\s+(?:to|in|into)\s+(?:your|ur|a\/c|acct|account|card)\b/i.test(
+      text
+    );
+
+  let direction: 'CREDIT' | 'DEBIT' = 'CREDIT';
+  if (isCredit && !isDebit) {
+    direction = 'CREDIT';
+  } else if (isDebit && !isCredit) {
+    direction = 'DEBIT';
+  } else if (isRefundKeyword) {
+    direction = 'CREDIT';
+  } else if (explicitSelfCredit) {
+    direction = hasStrongDebitPhrase && !hasOwnAccountCredit ? 'DEBIT' : 'CREDIT';
+  } else if (isDebit) {
+    direction = 'DEBIT';
+  }
 
   // 7. Extract Amount (must have monetary value)
   let amount: number | null = null;
@@ -466,12 +482,11 @@ export function inspectBankSms(
   // 14. Extract True Transaction Date from SMS Body
   const transactionDate = extractTransactionDate(text, fallbackTimestamp);
 
-  // 15. Special transaction flags
+  // 15. Special transaction flags (avoid misclassifying NEFT salary/income as self-transfer)
   const isSelfTransfer =
-    /\b(own account|self transfer|internal transfer|same bank)\b/i.test(text) ||
-    (/\bneft\b/i.test(text) &&
-      bankName !== 'Bank' &&
-      text.toUpperCase().includes(bankName.toUpperCase().split(' ')[0]));
+    /\b(own account|self transfer|internal transfer|same bank transfer|between your accounts|transfer to your own|linked account transfer|trf to self|to own a\/c)\b/i.test(
+      text
+    );
   const isCashback = /\b(cashback|reward credited|cashback received|reward points credited)\b/i.test(text);
   const isRefund = direction === 'CREDIT' && isRefundKeyword;
 

@@ -43,19 +43,24 @@
   ],
   "shortcuts": [
     {
+      "name": "Home",
+      "url": "/",
+      "description": "Financial dashboard & live overview"
+    },
+    {
       "name": "Transactions",
       "url": "/transactions",
       "description": "View all synced transactions"
     },
     {
-      "name": "Accounts",
-      "url": "/accounts",
-      "description": "View bank accounts and cards"
-    },
-    {
       "name": "Analytics",
       "url": "/analytics",
       "description": "View financial insights & cash flow"
+    },
+    {
+      "name": "Accounts",
+      "url": "/accounts",
+      "description": "View bank accounts and cards"
     }
   ]
 }

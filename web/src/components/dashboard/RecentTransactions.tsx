@@ -10,6 +10,7 @@ import { SkeletonList } from '@/components/ui/Skeleton';
 import { Transaction } from '@/lib/types';
 import { TransactionDetailModal } from '@/components/dashboard/TransactionDetailModal';
 import { AddTransactionModal } from '@/components/dashboard/AddTransactionModal';
+import { getCategoryVisual } from '@/lib/categoryVisuals';
 
 interface RecentTransactionsProps {
   transactions: Transaction[];
@@ -126,14 +127,15 @@ export function RecentTransactions({
                 <div className="divide-y divide-slate-100/80">
                   {group.items.map((tx) => {
                     const isCredit = tx.direction === 'CREDIT';
-                    const catColor = tx.categories?.color;
-                    const circleStyle = catColor
-                      ? {
-                          backgroundColor: `${catColor}18`,
-                          color: catColor,
-                          borderColor: `${catColor}35`,
-                        }
-                      : undefined;
+                    const isTransfer = tx.transaction_type === 'TRANSFER' || tx.transaction_type === 'CC_BILL_PAYMENT';
+                    const visual = getCategoryVisual(
+                      tx.categories?.name,
+                      tx.transaction_type,
+                      tx.direction,
+                      tx.merchant
+                    );
+                    const CatIcon = visual.icon;
+                    const accentColor = tx.categories?.color || visual.defaultColor;
 
                     return (
                       <button
@@ -143,21 +145,28 @@ export function RecentTransactions({
                         className="w-full min-h-[72px] py-3 px-2.5 flex items-center justify-between gap-3 rounded-xl hover:bg-slate-50/80 active:bg-slate-100/80 transition-all text-left cursor-pointer"
                       >
                         <div className="flex items-center gap-3 min-w-0">
-                          <div
-                            style={circleStyle}
-                            className={`w-10 h-10 rounded-full border flex items-center justify-center shrink-0 ${
-                              !catColor
-                                ? isCredit
-                                  ? 'bg-emerald-50 text-emerald-600 border-emerald-200/60'
-                                  : 'bg-rose-50 text-rose-500 border-rose-200/60'
-                                : ''
-                            }`}
-                          >
-                            {isCredit ? (
-                              <ArrowDownLeft className="w-4 h-4" />
-                            ) : (
-                              <ArrowUpRight className="w-4 h-4" />
-                            )}
+                          <div className="relative shrink-0">
+                            <div
+                              style={{
+                                backgroundColor: `${accentColor}16`,
+                                color: accentColor,
+                                borderColor: `${accentColor}30`,
+                              }}
+                              className="w-10 h-10 rounded-xl border flex items-center justify-center"
+                            >
+                              <CatIcon className="w-4 h-4" />
+                            </div>
+                            <span
+                              className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-white flex items-center justify-center ${
+                                isTransfer ? 'bg-violet-600' : isCredit ? 'bg-emerald-500' : 'bg-rose-500'
+                              } text-white`}
+                            >
+                              {isCredit ? (
+                                <ArrowDownLeft className="w-2.5 h-2.5" />
+                              ) : (
+                                <ArrowUpRight className="w-2.5 h-2.5" />
+                              )}
+                            </span>
                           </div>
 
                           <div className="min-w-0">

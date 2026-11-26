@@ -8,6 +8,7 @@ import { PwaProvider } from '@/components/pwa/PwaProvider';
 import { SmsProvider } from '@/components/sms/SmsProvider';
 import { SmsPermissionModal } from '@/components/sms/SmsPermissionModal';
 import { SmsSyncModal } from '@/components/sms/SmsSyncModal';
+import { SetupWizardModal } from '@/components/setup/SetupWizardModal';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -19,6 +20,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
             <BiometricLockScreen />
             <SmsPermissionModal />
             <SmsSyncModal />
+            <SetupWizardModal />
           </SmsProvider>
         </ToastProvider>
       </PwaProvider>

@@ -100,10 +100,14 @@ export async function GET() {
     }
 
     const accountList = accounts || [];
-    const totalBalance = accountList.reduce(
-      (sum, acc) => sum + (Number(acc.current_balance) || 0),
-      0
-    );
+    const totalAssets = accountList
+      .filter((acc) => acc.account_type !== 'CREDIT_CARD')
+      .reduce((sum, acc) => sum + (Number(acc.current_balance) || 0), 0);
+    const creditOutstanding = accountList
+      .filter((acc) => acc.account_type === 'CREDIT_CARD')
+      .reduce((sum, acc) => sum + Math.abs(Number(acc.current_balance) || 0), 0);
+    const totalBalance = totalAssets;
+    const netWorth = totalAssets - creditOutstanding;
 
     const accountToBank = new Map<string, string>();
     const bankMap = new Map<
@@ -129,8 +133,9 @@ export async function GET() {
         total_debit: 0,
         tx_count: 0,
       };
+      const rawBal = Number(acc.current_balance) || 0;
       existing.account_count += 1;
-      existing.balance += Number(acc.current_balance) || 0;
+      existing.balance += acc.account_type === 'CREDIT_CARD' ? -Math.abs(rawBal) : rawBal;
       bankMap.set(bankName, existing);
     }
 
@@ -138,7 +143,7 @@ export async function GET() {
     const { data: allTxns, error: txError } = await auth.supabase
       .from('transactions')
       .select(
-        'account_id, amount, direction, transaction_type, merchant, is_excluded_from_totals, transaction_date, categories(id, name, color)'
+        'id, account_id, amount, direction, transaction_type, transaction_source, transaction_status, duplicate_status, is_self_transfer, is_refund, linked_transaction_id, merchant, is_excluded_from_totals, transaction_date, categories(id, name, color)'
       )
       .eq('user_id', auth.user.id)
       .order('transaction_date', { ascending: true });
@@ -184,11 +189,15 @@ export async function GET() {
     }
 
     let totalIncome = 0;
-    let totalExpenses = 0;
+    let totalGrossExpenses = 0;
+    let totalRefunds = 0;
     let monthlyIncome = 0;
-    let monthlyExpense = 0;
+    let monthlyGrossExpense = 0;
+    let monthlyRefunds = 0;
+    let monthlyCashback = 0;
     let prevMonthlyIncome = 0;
-    let prevMonthlyExpense = 0;
+    let prevMonthlyGrossExpense = 0;
+    let prevMonthlyRefunds = 0;
 
     let todayIncome = 0;
     let todayExpenses = 0;
@@ -197,19 +206,39 @@ export async function GET() {
     const todayCategoryMap: Record<string, number> = {};
 
     const categoryTotals: Record<string, { value: number; color: string }> = {};
+    const categoryRefunds: Record<string, number> = {};
     const monthlyMap: Record<string, { income: number; expense: number }> = {};
     const merchantMap: Record<string, { total: number; count: number }> = {};
 
-    for (const tx of txList as Array<{
+    type StatsTxRow = {
+      id?: string;
       account_id?: string | null;
       amount: number | string;
       direction: string;
       transaction_type: string;
+      transaction_source?: string | null;
+      transaction_status?: string | null;
+      duplicate_status?: string | null;
+      is_self_transfer?: boolean;
+      is_refund?: boolean;
+      linked_transaction_id?: string | null;
       merchant?: string | null;
       is_excluded_from_totals?: boolean;
       transaction_date: string;
       categories?: { id: string; name: string; color: string } | Array<{ id: string; name: string; color: string }> | null;
-    }>) {
+    };
+
+    const typedTxList = txList as StatsTxRow[];
+    const txById = new Map<string, StatsTxRow>();
+    for (const row of typedTxList) {
+      if (row.id) txById.set(row.id, row);
+    }
+
+    for (const tx of typedTxList) {
+      if (tx.transaction_status === 'FAILED' || tx.duplicate_status === 'EXACT_DUPLICATE') {
+        continue;
+      }
+
       const amt = Number(tx.amount) || 0;
       const txDate = new Date(tx.transaction_date);
       if (isNaN(txDate.getTime())) continue;
@@ -235,11 +264,39 @@ export async function GET() {
         }
       }
 
-      // Exclude self-transfers and CC bill payments from income/expense totals
+      const isRefundTx =
+        Boolean(tx.is_refund) ||
+        tx.transaction_type === 'REFUND' ||
+        tx.transaction_type === 'REVERSAL' ||
+        tx.transaction_source === 'REFUND_REVERSAL';
+
+      if (isRefundTx) {
+        totalRefunds += amt;
+        monthlyMap[monthKey].expense = Math.max(0, monthlyMap[monthKey].expense - amt);
+        if (monthKey === currentMonthKey) {
+          monthlyRefunds += amt;
+          const linkedOrig = tx.linked_transaction_id ? txById.get(tx.linked_transaction_id) : undefined;
+          const origCatObj = linkedOrig
+            ? Array.isArray(linkedOrig.categories)
+              ? linkedOrig.categories[0]
+              : linkedOrig.categories
+            : undefined;
+          const txCatObj = Array.isArray(tx.categories) ? tx.categories[0] : tx.categories;
+          const refundCatName = origCatObj?.name || txCatObj?.name || 'Uncategorized';
+          categoryRefunds[refundCatName] = (categoryRefunds[refundCatName] || 0) + amt;
+        } else if (monthKey === prevMonthKey) {
+          prevMonthlyRefunds += amt;
+        }
+        continue;
+      }
+
+      // Exclude self-transfers, CC bill payments, and reversed transactions from income/expense totals
       if (
         tx.is_excluded_from_totals ||
+        tx.is_self_transfer ||
         tx.transaction_type === 'CC_BILL_PAYMENT' ||
-        tx.transaction_type === 'TRANSFER'
+        tx.transaction_type === 'TRANSFER' ||
+        tx.transaction_status === 'REVERSED'
       ) {
         continue;
       }
@@ -247,10 +304,17 @@ export async function GET() {
       const catObj = Array.isArray(tx.categories) ? tx.categories[0] : tx.categories;
       const catName = catObj?.name || 'Uncategorized';
       const catColor = catObj?.color || '#94A3B8';
+      const isCashbackTx =
+        tx.direction === 'CREDIT' &&
+        (catName.toLowerCase() === 'cashback' || (tx.merchant || '').toLowerCase().includes('cashback'));
+
+      if (isCashbackTx && monthKey === currentMonthKey) {
+        monthlyCashback += amt;
+      }
 
       // Daily trend bucket (last 14 days)
       const trendBucket = dailyMap.get(dayKey);
-      if (trendBucket) {
+      if (trendBucket && !isCashbackTx) {
         if (tx.direction === 'CREDIT') {
           trendBucket.income += amt;
         } else {
@@ -262,7 +326,7 @@ export async function GET() {
       if (dayKey === todayKey) {
         todayTxCount += 1;
         if (tx.direction === 'CREDIT') {
-          todayIncome += amt;
+          if (!isCashbackTx) todayIncome += amt;
         } else {
           todayExpenses += amt;
           todayCategoryMap[catName] = (todayCategoryMap[catName] || 0) + amt;
@@ -272,37 +336,50 @@ export async function GET() {
       }
 
       if (tx.direction === 'CREDIT') {
-        totalIncome += amt;
-        monthlyMap[monthKey].income += amt;
-        if (monthKey === currentMonthKey) {
-          monthlyIncome += amt;
-        } else if (monthKey === prevMonthKey) {
-          prevMonthlyIncome += amt;
+        if (!isCashbackTx) {
+          totalIncome += amt;
+          monthlyMap[monthKey].income += amt;
+          if (monthKey === currentMonthKey) {
+            monthlyIncome += amt;
+          } else if (monthKey === prevMonthKey) {
+            prevMonthlyIncome += amt;
+          }
         }
       } else {
-        totalExpenses += amt;
+        totalGrossExpenses += amt;
         monthlyMap[monthKey].expense += amt;
         if (monthKey === currentMonthKey) {
-          monthlyExpense += amt;
+          monthlyGrossExpense += amt;
           const merchantName = (tx.merchant || 'Unknown Merchant').trim();
           if (!merchantMap[merchantName]) {
             merchantMap[merchantName] = { total: 0, count: 0 };
           }
           merchantMap[merchantName].total += amt;
           merchantMap[merchantName].count += 1;
-        } else if (monthKey === prevMonthKey) {
-          prevMonthlyExpense += amt;
-        }
 
-        if (!categoryTotals[catName]) {
-          categoryTotals[catName] = { value: 0, color: catColor };
+          if (!categoryTotals[catName]) {
+            categoryTotals[catName] = { value: 0, color: catColor };
+          }
+          categoryTotals[catName].value += amt;
+        } else if (monthKey === prevMonthKey) {
+          prevMonthlyGrossExpense += amt;
         }
-        categoryTotals[catName].value += amt;
       }
     }
 
+    const totalExpenses = Math.max(0, totalGrossExpenses - totalRefunds);
+    const monthlyExpense = Math.max(0, monthlyGrossExpense - monthlyRefunds);
+    const prevMonthlyExpense = Math.max(0, prevMonthlyGrossExpense - prevMonthlyRefunds);
     const netSavings = monthlyIncome - monthlyExpense;
     const savingsRate = monthlyIncome > 0 ? (netSavings / monthlyIncome) * 100 : 0;
+
+    for (const catKey of Object.keys(categoryTotals)) {
+      const refDed = categoryRefunds[catKey] || 0;
+      categoryTotals[catKey].value = Math.max(0, categoryTotals[catKey].value - refDed);
+      if (categoryTotals[catKey].value <= 0) {
+        delete categoryTotals[catKey];
+      }
+    }
 
     const incomeChangePct =
       prevMonthlyIncome > 0
@@ -376,6 +453,9 @@ export async function GET() {
     return NextResponse.json({
       summary: {
         total_balance: Math.round(totalBalance * 100) / 100,
+        total_assets: Math.round(totalAssets * 100) / 100,
+        credit_outstanding: Math.round(creditOutstanding * 100) / 100,
+        net_worth: Math.round(netWorth * 100) / 100,
         total_income: Math.round(totalIncome * 100) / 100,
         total_expenses: Math.round(totalExpenses * 100) / 100,
         monthly_income: Math.round(monthlyIncome * 100) / 100,
@@ -384,6 +464,8 @@ export async function GET() {
         savings_rate: Math.round(savingsRate * 10) / 10,
         income_change_pct: incomeChangePct,
         expense_change_pct: expenseChangePct,
+        refunds_total: Math.round(monthlyRefunds * 100) / 100,
+        cashback_total: Math.round(monthlyCashback * 100) / 100,
       },
       today: {
         income: Math.round(todayIncome * 100) / 100,

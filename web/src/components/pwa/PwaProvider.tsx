@@ -1,7 +1,8 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { Download, WifiOff, Share2, PlusSquare, X } from 'lucide-react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import { WifiOff, Share2, PlusSquare, X, RefreshCw, Sparkles } from 'lucide-react';
+import { flushBrowserSyncQueue } from '@/lib/offlineStore';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -13,8 +14,10 @@ interface PwaContextType {
   isInstalled: boolean;
   isIos: boolean;
   isOffline: boolean;
+  updateAvailable: boolean;
   triggerInstall: () => void;
   openIosInstallModal: () => void;
+  applyUpdate: () => void;
 }
 
 const PwaContext = createContext<PwaContextType | undefined>(undefined);
@@ -26,13 +29,76 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
   const [isIos, setIsIos] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
   const [showIosModal, setShowIosModal] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false);
+
+  const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
+  const waitingWorkerRef = useRef<ServiceWorker | null>(null);
+  const reloadingOnControllerChangeRef = useRef(false);
+
+  const tryFlushOfflineQueue = useCallback(async () => {
+    try {
+      const result = await flushBrowserSyncQueue();
+      if (result.synced > 0 && typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('monzi:sms-synced', {
+            detail: { internal: false, count: result.synced },
+          })
+        );
+      }
+    } catch {
+      // Best-effort background flush
+    }
+  }, []);
 
   useEffect(() => {
-    // 1. Register Service Worker
-    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+    if (typeof window === 'undefined') return;
+
+    let cancelled = false;
+    let swRegistration: ServiceWorkerRegistration | null = null;
+
+    const handleControllerChange = () => {
+      if (reloadingOnControllerChangeRef.current) {
+        reloadingOnControllerChangeRef.current = false;
+        window.location.reload();
+      }
+    };
+
+    const handleUpdateFound = () => {
+      if (!swRegistration) return;
+      const newWorker = swRegistration.installing;
+      if (!newWorker) return;
+
+      newWorker.addEventListener('statechange', () => {
+        if (
+          !cancelled &&
+          newWorker.state === 'installed' &&
+          navigator.serviceWorker.controller
+        ) {
+          waitingWorkerRef.current = newWorker;
+          setUpdateAvailable(true);
+          setUpdateBannerDismissed(false);
+        }
+      });
+    };
+
+    // 1. Register Service Worker & detect updates
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
+
       navigator.serviceWorker
         .register('/sw.js')
         .then((reg) => {
+          if (cancelled) return;
+          swRegistration = reg;
+          registrationRef.current = reg;
+
+          if (reg.waiting && navigator.serviceWorker.controller) {
+            waitingWorkerRef.current = reg.waiting;
+            setUpdateAvailable(true);
+          }
+
+          reg.addEventListener('updatefound', handleUpdateFound);
           console.log('[PWA] Service Worker registered successfully', reg.scope);
         })
         .catch((err) => {
@@ -61,19 +127,43 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
-    // 5. Track online / offline state
+    // 5. Track online / offline state & flush queued offline items when back online
     setIsOffline(!navigator.onLine);
-    const handleOnline = () => setIsOffline(false);
+    if (navigator.onLine) {
+      void tryFlushOfflineQueue();
+    }
+
+    const handleOnline = () => {
+      setIsOffline(false);
+      void tryFlushOfflineQueue();
+    };
     const handleOffline = () => setIsOffline(true);
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
     return () => {
+      cancelled = true;
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange);
+      }
+      if (swRegistration) {
+        swRegistration.removeEventListener('updatefound', handleUpdateFound);
+      }
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
+  }, [tryFlushOfflineQueue]);
+
+  const applyUpdate = useCallback(() => {
+    const waiting = waitingWorkerRef.current || registrationRef.current?.waiting;
+    if (waiting) {
+      reloadingOnControllerChangeRef.current = true;
+      waiting.postMessage({ type: 'SKIP_WAITING' });
+    } else if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
   }, []);
 
   const triggerInstall = async () => {
@@ -101,19 +191,60 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
         isInstalled,
         isIos,
         isOffline,
+        updateAvailable,
         triggerInstall,
         openIosInstallModal,
+        applyUpdate,
       }}
     >
       {/* Offline Status Bar Banner */}
       {isOffline && (
         <div className="bg-amber-500 text-slate-900 text-xs font-semibold px-4 py-2 flex items-center justify-center gap-2 sticky top-0 z-50 shadow-md">
-          <WifiOff className="w-4 h-4" />
+          <WifiOff className="w-4 h-4 shrink-0" />
           <span>You are working in Offline Mode. Viewing cached financial data.</span>
         </div>
       )}
 
       {children}
+
+      {/* Sleek Apple Glass Floating PWA Update Banner */}
+      {updateAvailable && !updateBannerDismissed && (
+        <div className="fixed bottom-24 md:bottom-6 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-md animate-slide-up">
+          <div className="bg-white/85 backdrop-blur-2xl border border-blue-200/80 shadow-[0_12px_36px_rgba(37,99,235,0.18)] rounded-2xl px-4 py-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-slate-900 truncate">
+                  New version available
+                </p>
+                <p className="text-[11px] text-slate-500 truncate">
+                  Refresh to update Monzi 2.0
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={applyUpdate}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm shadow-blue-500/25 hover:shadow-md transition-all active:scale-95"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Refresh to update</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setUpdateBannerDismissed(true)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                aria-label="Dismiss update notification"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* iOS "Add to Home Screen" Instructions Bottom Sheet Modal */}
       {showIosModal && (

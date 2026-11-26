@@ -3,8 +3,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   X,
-  ArrowUpRight,
-  ArrowDownLeft,
   Copy,
   Check,
   CreditCard,
@@ -15,8 +13,9 @@ import {
   Tag,
   AlertTriangle,
 } from 'lucide-react';
-import { Transaction, Category } from '@/lib/types';
+import { Transaction, Category, Account } from '@/lib/types';
 import { useToast } from '@/components/ui/Toast';
+import { getCategoryVisual } from '@/lib/categoryVisuals';
 
 interface TransactionDetailModalProps {
   transaction: Transaction | null;
@@ -31,8 +30,14 @@ export function TransactionDetailModal({
 }: TransactionDetailModalProps) {
   const [copied, setCopied] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
+  const [editedMerchant, setEditedMerchant] = useState('');
+  const [editedAmount, setEditedAmount] = useState('');
+  const [editedType, setEditedType] = useState('EXPENSE');
+  const [editedDirection, setEditedDirection] = useState<'CREDIT' | 'DEBIT'>('DEBIT');
+  const [selectedAccountId, setSelectedAccountId] = useState('');
   const [editedNotes, setEditedNotes] = useState('');
   const [categories, setCategories] = useState<Category[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -42,13 +47,21 @@ export function TransactionDetailModal({
     if (transaction) {
       document.body.style.overflow = 'hidden';
       setSelectedCategoryId(transaction.category_id || '');
+      setEditedMerchant(transaction.merchant || '');
+      setEditedAmount(String(transaction.amount ?? ''));
+      setEditedType(transaction.transaction_type || (transaction.direction === 'CREDIT' ? 'INCOME' : 'EXPENSE'));
+      setEditedDirection(transaction.direction === 'CREDIT' ? 'CREDIT' : 'DEBIT');
+      setSelectedAccountId(transaction.account_id || '');
       setEditedNotes(transaction.notes || '');
       setConfirmDelete(false);
 
-      fetch('/api/categories')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.categories) setCategories(data.categories);
+      Promise.all([
+        fetch('/api/categories').then((res) => res.json()),
+        fetch('/api/accounts').then((res) => res.json()),
+      ])
+        .then(([catData, accData]) => {
+          if (catData.categories) setCategories(catData.categories);
+          if (accData.accounts) setAccounts(accData.accounts);
         })
         .catch((e) => console.error(e));
     } else {
@@ -62,13 +75,26 @@ export function TransactionDetailModal({
 
   if (!transaction) return null;
 
-  const isCredit = transaction.direction === 'CREDIT';
+  const isCredit = editedDirection === 'CREDIT';
+  const parsedAmount = parseFloat(editedAmount);
   const hasChanges =
     selectedCategoryId !== (transaction.category_id || '') ||
-    editedNotes !== (transaction.notes || '');
+    editedNotes !== (transaction.notes || '') ||
+    editedMerchant !== (transaction.merchant || '') ||
+    editedType !== (transaction.transaction_type || 'EXPENSE') ||
+    editedDirection !== (transaction.direction === 'CREDIT' ? 'CREDIT' : 'DEBIT') ||
+    selectedAccountId !== (transaction.account_id || '') ||
+    (!isNaN(parsedAmount) && parsedAmount !== Number(transaction.amount));
 
   const currentCategory =
     categories.find((c) => c.id === selectedCategoryId) || transaction.categories || null;
+  const catVisual = getCategoryVisual(
+    currentCategory?.name,
+    editedType,
+    editedDirection,
+    editedMerchant
+  );
+  const CatHeroIcon = catVisual.icon;
 
   const formatInr = (val: number) =>
     new Intl.NumberFormat('en-IN', {
@@ -96,6 +122,10 @@ export function TransactionDetailModal({
   };
 
   const handleSave = async () => {
+    if (!parsedAmount || isNaN(parsedAmount) || parsedAmount <= 0) {
+      toast.error('Please enter a valid positive amount');
+      return;
+    }
     setIsSaving(true);
     try {
       const res = await fetch('/api/transactions', {
@@ -105,6 +135,11 @@ export function TransactionDetailModal({
           id: transaction.id,
           category_id: selectedCategoryId || null,
           notes: editedNotes.trim() || null,
+          merchant: editedMerchant.trim() || 'Unknown Merchant',
+          amount: parsedAmount,
+          direction: editedDirection,
+          transaction_type: editedType,
+          account_id: selectedAccountId || null,
         }),
       });
 
@@ -170,19 +205,17 @@ export function TransactionDetailModal({
         {/* Hero: Merchant + Huge Colored Amount + Date & Mode */}
         <div className="px-6 py-5 text-center bg-slate-50/70 border-b border-slate-100">
           <div
-            className={`w-12 h-12 rounded-2xl mx-auto mb-3 flex items-center justify-center ${
-              isCredit ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'
-            }`}
+            className="w-12 h-12 rounded-2xl mx-auto mb-3 flex items-center justify-center"
+            style={{
+              backgroundColor: `${currentCategory?.color || catVisual.defaultColor}18`,
+              color: currentCategory?.color || catVisual.defaultColor,
+            }}
           >
-            {isCredit ? (
-              <ArrowDownLeft className="w-6 h-6 stroke-[2.5]" />
-            ) : (
-              <ArrowUpRight className="w-6 h-6 stroke-[2.5]" />
-            )}
+            <CatHeroIcon className="w-6 h-6" />
           </div>
 
           <h2 className="text-lg font-bold text-slate-900 truncate px-2">
-            {transaction.merchant || 'Unknown Merchant'}
+            {editedMerchant || transaction.merchant || 'Unknown Merchant'}
           </h2>
 
           <p
@@ -190,7 +223,7 @@ export function TransactionDetailModal({
               isCredit ? 'text-emerald-600' : 'text-rose-500'
             }`}
           >
-            {isCredit ? '+' : '-'}{formatInr(transaction.amount)}
+            {isCredit ? '+' : '-'}{formatInr(!isNaN(parsedAmount) && parsedAmount > 0 ? parsedAmount : transaction.amount)}
           </p>
 
           <p className="text-xs text-slate-500 font-medium mt-2 flex items-center justify-center gap-1.5">
@@ -203,7 +236,56 @@ export function TransactionDetailModal({
 
         {/* Body */}
         <div className="p-5 sm:p-6 space-y-4 overflow-y-auto flex-1">
-          {/* Category (colored badge + editable dropdown) */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                Amount (₹)
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={editedAmount}
+                onChange={(e) => setEditedAmount(e.target.value)}
+                className={`${inputCls} font-mono font-bold`}
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                Classification
+              </label>
+              <select
+                value={editedType}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setEditedType(next);
+                  if (next === 'INCOME' || next === 'REFUND' || next === 'REVERSAL') setEditedDirection('CREDIT');
+                  if (next === 'EXPENSE') setEditedDirection('DEBIT');
+                }}
+                className={`${inputCls} min-h-[44px]`}
+              >
+                <option value="EXPENSE">Expense (-)</option>
+                <option value="INCOME">Income (+)</option>
+                <option value="TRANSFER">Self Transfer</option>
+                <option value="REFUND">Refund</option>
+                <option value="CC_BILL_PAYMENT">CC Bill Payment</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+              Merchant / Source
+            </label>
+            <input
+              type="text"
+              value={editedMerchant}
+              onChange={(e) => setEditedMerchant(e.target.value)}
+              className={inputCls}
+            />
+          </div>
+
+          {/* Category (grouped Income vs Expense + colored badge) */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
@@ -230,24 +312,45 @@ export function TransactionDetailModal({
               className={`${inputCls} min-h-[44px]`}
             >
               <option value="">Uncategorized</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
+              <optgroup label={isCredit ? 'Income Categories' : 'Expense Categories'}>
+                {categories
+                  .filter((c) => Boolean(c.is_income) === isCredit)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+              </optgroup>
+              <optgroup label={isCredit ? 'Expense Categories' : 'Income Categories'}>
+                {categories
+                  .filter((c) => Boolean(c.is_income) !== isCredit)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+              </optgroup>
             </select>
           </div>
 
-          {/* Account Name */}
-          <div className="flex items-center justify-between p-3.5 rounded-xl bg-slate-50 border border-slate-100">
-            <div className="flex items-center gap-2 text-xs text-slate-500 font-medium">
-              <CreditCard className="w-4 h-4 text-blue-600" />
-              <span>Account</span>
-            </div>
-            <span className="text-xs font-bold text-slate-900">
-              {transaction.accounts?.bank_name || 'Manual'}{' '}
-              {transaction.accounts?.account_number_mask || ''}
-            </span>
+          {/* Account Selector */}
+          <div>
+            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+              <CreditCard className="w-3.5 h-3.5 text-blue-600" />
+              Account
+            </label>
+            <select
+              value={selectedAccountId}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+              className={`${inputCls} min-h-[44px]`}
+            >
+              <option value="">Manual / Unassigned</option>
+              {accounts.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.bank_name} ({acc.account_number_mask})
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Reference ID */}

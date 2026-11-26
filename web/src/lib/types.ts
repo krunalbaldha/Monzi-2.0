@@ -5,6 +5,7 @@ export type TransactionType =
   | 'INCOME'
   | 'TRANSFER'
   | 'REFUND'
+  | 'REVERSAL'
   | 'INVESTMENT'
   | 'CC_BILL_PAYMENT'
   | 'CASH_WITHDRAWAL'
@@ -19,6 +20,17 @@ export type SmsProcessingStatus =
   | 'FAILED'
   | 'UNCLASSIFIED';
 
+export type BalanceSource = 'BANK_REPORTED' | 'CALCULATED' | 'ESTIMATED' | 'UNAVAILABLE';
+
+export type TransactionSource =
+  | 'HISTORICAL_SMS'
+  | 'INCOMING_SMS'
+  | 'REFUND_REVERSAL'
+  | 'MANUAL'
+  | 'INTEGRATION';
+
+export type TransactionStatus = 'COMPLETED' | 'FAILED' | 'PENDING' | 'REVERSED';
+
 export interface Account {
   id: string;
   user_id?: string;
@@ -26,7 +38,10 @@ export interface Account {
   account_number_mask: string;
   account_type: AccountType;
   initial_balance: number;
+  opening_balance?: number;
   current_balance: number;
+  balance_source?: BalanceSource;
+  account_status?: string;
   last_synced_at?: string;
   created_at: string;
   updated_at: string;
@@ -54,11 +69,18 @@ export interface Transaction {
   reference_id?: string;
   sms_fingerprint: string;
   parsed_available_balance?: number;
+  is_self_transfer?: boolean;
+  is_refund?: boolean;
   is_excluded_from_totals: boolean;
+  duplicate_status?: string;
   linked_transaction_id?: string;
   notes?: string;
+  currency?: string;
+  transaction_source?: TransactionSource;
+  transaction_status?: TransactionStatus;
   transaction_date: string;
   created_at: string;
+  updated_at?: string;
 
   // Joined relation fields
   accounts?: {
@@ -125,6 +147,9 @@ export interface FinancialSummary {
   savings_rate: number;
   income_change_pct: number;
   expense_change_pct: number;
+  refunds_total?: number;
+  cashback_total?: number;
+  total_tx_count?: number;
 }
 
 export interface DailyFinancialSummary {
@@ -158,6 +183,42 @@ export interface IncomingSmsPayload {
     parsed_available_balance?: number;
     is_self_transfer?: boolean;
     is_refund?: boolean;
+    transaction_source?: TransactionSource;
+    transaction_status?: TransactionStatus;
+    currency?: string;
     raw_body?: string;
   }>;
+}
+
+export interface TransactionRule {
+  id: string;
+  user_id?: string;
+  matching_rule: string;
+  category_id: string;
+  priority: number;
+  enabled: boolean;
+  categories?: Category;
+  created_at: string;
+}
+
+export interface DeviceRecord {
+  id: string;
+  device_identifier: string;
+  platform: string;
+  app_version?: string;
+  last_seen_at: string;
+  created_at: string;
+}
+
+export interface SetupStatusPayload {
+  account_created: boolean;
+  email_verified: boolean;
+  device_registered: boolean;
+  sms_access_granted: boolean;
+  historical_sync_status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
+  live_monitoring_active: boolean;
+  cloud_sync_active: boolean;
+  last_processed_at: string | null;
+  last_sync_at: string | null;
+  device_count: number;
 }

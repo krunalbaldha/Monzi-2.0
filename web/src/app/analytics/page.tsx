@@ -32,17 +32,39 @@ import {
   RefreshCw,
   AlertCircle,
   Landmark,
+  Sparkles,
+  Lightbulb,
+  Receipt,
+  Repeat,
+  ArrowUpRight,
+  ArrowDownRight,
+  WifiOff,
 } from 'lucide-react';
 import { Account, AccountType, FinancialSummary, Transaction } from '@/lib/types';
+import { loadOfflineSnapshot, saveOfflineSnapshot } from '@/lib/offlineStore';
 import { useAuth } from '@/components/auth/AuthProvider';
+import { usePwa } from '@/components/pwa/PwaProvider';
 
-type PeriodKey = 'THIS_MONTH' | 'LAST_MONTH' | 'LAST_3_MONTHS';
+type PeriodKey =
+  | 'TODAY'
+  | 'YESTERDAY'
+  | 'THIS_WEEK'
+  | 'THIS_MONTH'
+  | 'PREVIOUS_MONTH'
+  | 'FINANCIAL_YEAR'
+  | 'CUSTOM';
 
-const PERIOD_TABS: Array<{ key: PeriodKey; label: string }> = [
-  { key: 'THIS_MONTH', label: 'This Month' },
-  { key: 'LAST_MONTH', label: 'Last Month' },
-  { key: 'LAST_3_MONTHS', label: 'Last 3 Months' },
+const PERIOD_TABS: Array<{ key: PeriodKey; label: string; apiParam: string }> = [
+  { key: 'TODAY', label: 'Today', apiParam: 'today' },
+  { key: 'YESTERDAY', label: 'Yesterday', apiParam: 'yesterday' },
+  { key: 'THIS_WEEK', label: 'This Week', apiParam: 'week' },
+  { key: 'THIS_MONTH', label: 'This Month', apiParam: 'month' },
+  { key: 'PREVIOUS_MONTH', label: 'Previous Month', apiParam: 'prev_month' },
+  { key: 'FINANCIAL_YEAR', label: 'Financial Year', apiParam: 'fy' },
+  { key: 'CUSTOM', label: 'Custom Range', apiParam: 'custom' },
 ];
+
+const IST_TZ = 'Asia/Kolkata';
 
 const FALLBACK_COLORS = [
   '#2563EB',
@@ -54,6 +76,29 @@ const FALLBACK_COLORS = [
   '#14B8A6',
   '#8B5CF6',
 ];
+
+function toIstDateKey(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: IST_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function makeIstDate(dateKey: string, endOfDay = false): Date {
+  return new Date(`${dateKey}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+05:30`);
+}
+
+function shiftDateKey(dateKey: string, deltaDays: number): string {
+  const base = makeIstDate(dateKey, false);
+  base.setUTCDate(base.getUTCDate() + deltaDays);
+  return toIstDateKey(base);
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
 
 function formatInr(val: number): string {
   return new Intl.NumberFormat('en-IN', {
@@ -87,9 +132,33 @@ function formatAccountType(type: AccountType): string {
 function isExcludedTransaction(tx: Transaction): boolean {
   return (
     tx.is_excluded_from_totals ||
+    tx.is_self_transfer ||
+    tx.duplicate_status === 'EXACT_DUPLICATE' ||
     tx.transaction_type === 'TRANSFER' ||
-    tx.transaction_type === 'CC_BILL_PAYMENT'
+    tx.transaction_type === 'CC_BILL_PAYMENT' ||
+    tx.transaction_type === 'REFUND' ||
+    tx.transaction_type === 'REVERSAL' ||
+    tx.transaction_status === 'FAILED' ||
+    tx.transaction_status === 'REVERSED'
   );
+}
+
+function isRefundTx(tx: Transaction): boolean {
+  return (
+    (Boolean(tx.is_refund) ||
+      tx.transaction_type === 'REFUND' ||
+      tx.transaction_type === 'REVERSAL' ||
+      tx.transaction_source === 'REFUND_REVERSAL') &&
+    tx.transaction_status !== 'FAILED' &&
+    tx.duplicate_status !== 'EXACT_DUPLICATE'
+  );
+}
+
+function isCashbackTx(tx: Transaction): boolean {
+  if (tx.direction !== 'CREDIT') return false;
+  const cat = (tx.categories?.name || '').toLowerCase();
+  const merch = (tx.merchant || '').toLowerCase();
+  return cat === 'cashback' || merch.includes('cashback');
 }
 
 interface TrendTooltipProps {
@@ -163,8 +232,30 @@ function CategoryPieTooltip({ active, payload }: PieTooltipProps) {
   );
 }
 
+interface AnalyticsSnapshot {
+  statsSummary: FinancialSummary | null;
+  statsCashFlow: Array<{ month: string; income: number; expense: number }>;
+  dailyTrend: Array<{ date: string; label: string; income: number; expense: number }>;
+  bankSummary: Array<{
+    bank_name: string;
+    account_count: number;
+    balance: number;
+    total_credit: number;
+    total_debit: number;
+    tx_count: number;
+  }>;
+  transactions: Transaction[];
+  accounts: Account[];
+}
+
 export default function AnalyticsPage() {
+  const todayKey = useMemo(() => toIstDateKey(new Date()), []);
+  const monthStartKey = `${todayKey.slice(0, 7)}-01`;
+
   const [period, setPeriod] = useState<PeriodKey>('THIS_MONTH');
+  const [customFrom, setCustomFrom] = useState<string>(monthStartKey);
+  const [customTo, setCustomTo] = useState<string>(todayKey);
+
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [statsSummary, setStatsSummary] = useState<FinancialSummary | null>(null);
@@ -187,15 +278,26 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isCachedView, setIsCachedView] = useState(false);
+
   const { user, loading: authLoading } = useAuth();
+  const { isOffline } = usePwa();
 
   const fetchAnalytics = useCallback(async () => {
     setIsRefreshing(true);
     setError(null);
     try {
+      const activeTab = PERIOD_TABS.find((t) => t.key === period);
+      const statsUrl = new URL('/api/stats', window.location.origin);
+      if (activeTab) statsUrl.searchParams.set('period', activeTab.apiParam);
+      if (period === 'CUSTOM') {
+        if (customFrom) statsUrl.searchParams.set('from', customFrom);
+        if (customTo) statsUrl.searchParams.set('to', customTo);
+      }
+
       const [statsRes, txRes, accRes] = await Promise.all([
-        fetch('/api/stats'),
-        fetch('/api/transactions?limit=1000'),
+        fetch(statsUrl.toString()),
+        fetch('/api/transactions?limit=2000'),
         fetch('/api/accounts'),
       ]);
 
@@ -209,43 +311,92 @@ export default function AnalyticsPage() {
         throw new Error('Failed to load analytics data from database');
       }
 
+      let nextSummary = statsSummary;
+      let nextCashFlow = statsCashFlow;
+      let nextDaily = dailyTrend;
+      let nextBank = bankSummary;
+      let nextTxns = transactions;
+      let nextAccs = accounts;
+
       if (statsRes.ok) {
         const statsData = await statsRes.json();
-        setStatsSummary(statsData.summary || null);
-        setStatsCashFlow(statsData.cashFlow || []);
-        setDailyTrend(statsData.dailyTrend || []);
-        setBankSummary(statsData.bankSummary || []);
+        nextSummary = statsData.summary || null;
+        nextCashFlow = statsData.cashFlow || [];
+        nextDaily = statsData.dailyTrend || [];
+        nextBank = statsData.bankSummary || [];
+        setStatsSummary(nextSummary);
+        setStatsCashFlow(nextCashFlow);
+        setDailyTrend(nextDaily);
+        setBankSummary(nextBank);
       }
 
       if (txRes.ok) {
         const txData = await txRes.json();
-        setTransactions(txData.transactions || []);
+        nextTxns = txData.transactions || [];
+        setTransactions(nextTxns);
       }
 
       if (accRes.ok) {
         const accData = await accRes.json();
-        setAccounts(accData.accounts || []);
+        nextAccs = accData.accounts || [];
+        setAccounts(nextAccs);
       }
+
+      setIsCachedView(false);
+      void saveOfflineSnapshot<AnalyticsSnapshot>('analytics_snapshot', {
+        statsSummary: nextSummary,
+        statsCashFlow: nextCashFlow,
+        dailyTrend: nextDaily,
+        bankSummary: nextBank,
+        transactions: nextTxns,
+        accounts: nextAccs,
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unable to fetch analytics';
       console.error('Analytics fetch error:', err);
-      setError(msg);
+      const snap = await loadOfflineSnapshot<AnalyticsSnapshot>('analytics_snapshot');
+      if (snap?.data) {
+        setStatsSummary(snap.data.statsSummary);
+        setStatsCashFlow(snap.data.statsCashFlow || []);
+        setDailyTrend(snap.data.dailyTrend || []);
+        setBankSummary(snap.data.bankSummary || []);
+        setTransactions(snap.data.transactions || []);
+        setAccounts(snap.data.accounts || []);
+        setIsCachedView(true);
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [period, customFrom, customTo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!authLoading && user) {
-      fetchAnalytics();
+      void (async () => {
+        const snap = await loadOfflineSnapshot<AnalyticsSnapshot>('analytics_snapshot');
+        if (snap?.data) {
+          setStatsSummary(snap.data.statsSummary);
+          setStatsCashFlow(snap.data.statsCashFlow || []);
+          setDailyTrend(snap.data.dailyTrend || []);
+          setBankSummary(snap.data.bankSummary || []);
+          setTransactions(snap.data.transactions || []);
+          setAccounts(snap.data.accounts || []);
+          setIsCachedView(true);
+          setLoading(false);
+        }
+        if (typeof navigator === 'undefined' || navigator.onLine) {
+          await fetchAnalytics();
+        }
+      })();
     } else if (!authLoading && !user) {
       setLoading(false);
     }
   }, [authLoading, user, fetchAnalytics]);
 
   useEffect(() => {
-    const onSync = () => fetchAnalytics();
+    const onSync = () => void fetchAnalytics();
     window.addEventListener('monzi:sms-synced', onSync);
     window.addEventListener('monzi:refresh', onSync);
     return () => {
@@ -254,32 +405,168 @@ export default function AnalyticsPage() {
     };
   }, [fetchAnalytics]);
 
-  // Date window for selected period
+  // Date window for selected period (IST) + previous equivalent comparison window
   const periodWindow = useMemo(() => {
     const now = new Date();
-    const y = now.getFullYear();
-    const m = now.getMonth();
+    const curKey = toIstDateKey(now);
+    const [curY, curM, curD] = curKey.split('-').map(Number);
 
-    if (period === 'THIS_MONTH') {
-      const start = new Date(y, m, 1, 0, 0, 0, 0);
-      const end = now;
-      const days = Math.max(1, now.getDate());
-      return { start, end, days, subtitle: now.toLocaleString('en-IN', { month: 'long', year: 'numeric' }) };
+    if (period === 'TODAY') {
+      const start = makeIstDate(curKey, false);
+      const end = makeIstDate(curKey, true);
+      const prevKey = shiftDateKey(curKey, -1);
+      return {
+        start,
+        end,
+        prevStart: makeIstDate(prevKey, false),
+        prevEnd: makeIstDate(prevKey, true),
+        days: 1,
+        subtitle: `Today (${start.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })})`,
+        summaryTitle: 'Daily Automated Summary',
+        prevLabel: 'vs Yesterday',
+      };
     }
 
-    if (period === 'LAST_MONTH') {
-      const start = new Date(y, m - 1, 1, 0, 0, 0, 0);
-      const end = new Date(y, m, 0, 23, 59, 59, 999);
-      const days = Math.max(1, end.getDate());
-      return { start, end, days, subtitle: start.toLocaleString('en-IN', { month: 'long', year: 'numeric' }) };
+    if (period === 'YESTERDAY') {
+      const yKey = shiftDateKey(curKey, -1);
+      const prevKey = shiftDateKey(curKey, -2);
+      const start = makeIstDate(yKey, false);
+      const end = makeIstDate(yKey, true);
+      return {
+        start,
+        end,
+        prevStart: makeIstDate(prevKey, false),
+        prevEnd: makeIstDate(prevKey, true),
+        days: 1,
+        subtitle: `Yesterday (${start.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })})`,
+        summaryTitle: 'Yesterday Automated Summary',
+        prevLabel: 'vs Day Before',
+      };
     }
 
-    // LAST_3_MONTHS: current month + previous 2 months
-    const start = new Date(y, m - 2, 1, 0, 0, 0, 0);
-    const end = now;
-    const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86400000));
-    return { start, end, days, subtitle: 'Last 3 Months' };
-  }, [period]);
+    if (period === 'THIS_WEEK') {
+      const istMid = makeIstDate(curKey, false);
+      const dayOfWeek = istMid.getUTCDay(); // Sun=0, Mon=1..Sat=6 (note +05:30 shifts UTC day? Use getDay on IST local string)
+      const weekdayShort = new Intl.DateTimeFormat('en-US', {
+        timeZone: IST_TZ,
+        weekday: 'short',
+      }).format(now);
+      const weekdayOffsetMap: Record<string, number> = {
+        Mon: 0,
+        Tue: 1,
+        Wed: 2,
+        Thu: 3,
+        Fri: 4,
+        Sat: 5,
+        Sun: 6,
+      };
+      const offsetFromMon = weekdayOffsetMap[weekdayShort] ?? ((dayOfWeek + 6) % 7);
+      const weekStartKey = shiftDateKey(curKey, -offsetFromMon);
+      const prevWeekStartKey = shiftDateKey(weekStartKey, -7);
+      const prevWeekEndKey = shiftDateKey(weekStartKey, -1);
+      const start = makeIstDate(weekStartKey, false);
+      const end = makeIstDate(curKey, true);
+      const days = offsetFromMon + 1;
+      return {
+        start,
+        end,
+        prevStart: makeIstDate(prevWeekStartKey, false),
+        prevEnd: makeIstDate(prevWeekEndKey, true),
+        days,
+        subtitle: `This Week (${start.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – Today)`,
+        summaryTitle: 'Weekly Automated Summary',
+        prevLabel: 'vs Last Week',
+      };
+    }
+
+    if (period === 'PREVIOUS_MONTH') {
+      const pmDate = new Date(Date.UTC(curY, curM - 2, 1));
+      const pmY = pmDate.getUTCFullYear();
+      const pmM = pmDate.getUTCMonth() + 1;
+      const lastDay = new Date(Date.UTC(pmY, pmM, 0)).getUTCDate();
+      const startKey = `${pmY}-${pad2(pmM)}-01`;
+      const endKey = `${pmY}-${pad2(pmM)}-${pad2(lastDay)}`;
+
+      const pm2Date = new Date(Date.UTC(pmY, pmM - 2, 1));
+      const pm2Y = pm2Date.getUTCFullYear();
+      const pm2M = pm2Date.getUTCMonth() + 1;
+      const pm2LastDay = new Date(Date.UTC(pm2Y, pm2M, 0)).getUTCDate();
+
+      const start = makeIstDate(startKey, false);
+      return {
+        start,
+        end: makeIstDate(endKey, true),
+        prevStart: makeIstDate(`${pm2Y}-${pad2(pm2M)}-01`, false),
+        prevEnd: makeIstDate(`${pm2Y}-${pad2(pm2M)}-${pad2(pm2LastDay)}`, true),
+        days: lastDay,
+        subtitle: start.toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: IST_TZ }),
+        summaryTitle: 'Previous Month Summary',
+        prevLabel: 'vs 2 Months Ago',
+      };
+    }
+
+    if (period === 'FINANCIAL_YEAR') {
+      const fyStartYear = curM >= 4 ? curY : curY - 1;
+      const fyStartKey = `${fyStartYear}-04-01`;
+      const fyEndKey = `${fyStartYear + 1}-03-31`;
+      const effectiveEndKey = curKey < fyEndKey ? curKey : fyEndKey;
+      const start = makeIstDate(fyStartKey, false);
+      const end = makeIstDate(effectiveEndKey, true);
+      const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86400000));
+      return {
+        start,
+        end,
+        prevStart: makeIstDate(`${fyStartYear - 1}-04-01`, false),
+        prevEnd: makeIstDate(`${fyStartYear}-03-31`, true),
+        days,
+        subtitle: `FY ${fyStartYear}-${String((fyStartYear + 1) % 100).padStart(2, '0')} (Apr 1 – Mar 31 IST)`,
+        summaryTitle: 'Financial Year Summary',
+        prevLabel: `vs FY ${fyStartYear - 1}-${String(fyStartYear % 100).padStart(2, '0')}`,
+      };
+    }
+
+    if (period === 'CUSTOM') {
+      const fromKey = customFrom || `${curY}-${pad2(curM)}-01`;
+      const toKey = customTo || curKey;
+      const safeFrom = fromKey <= toKey ? fromKey : toKey;
+      const safeTo = fromKey <= toKey ? toKey : fromKey;
+      const start = makeIstDate(safeFrom, false);
+      const end = makeIstDate(safeTo, true);
+      const days = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000));
+      const prevEndKey = shiftDateKey(safeFrom, -1);
+      const prevStartKey = shiftDateKey(safeFrom, -days);
+      return {
+        start,
+        end,
+        prevStart: makeIstDate(prevStartKey, false),
+        prevEnd: makeIstDate(prevEndKey, true),
+        days,
+        subtitle: `${safeFrom} to ${safeTo}`,
+        summaryTitle: 'Custom Period Summary',
+        prevLabel: 'vs Prior Period',
+      };
+    }
+
+    // THIS_MONTH default
+    const startKey = `${curY}-${pad2(curM)}-01`;
+    const pmDate = new Date(Date.UTC(curY, curM - 2, 1));
+    const pmY = pmDate.getUTCFullYear();
+    const pmM = pmDate.getUTCMonth() + 1;
+    const pmLastDay = new Date(Date.UTC(pmY, pmM, 0)).getUTCDate();
+
+    const start = makeIstDate(startKey, false);
+    const end = makeIstDate(curKey, true);
+    return {
+      start,
+      end,
+      prevStart: makeIstDate(`${pmY}-${pad2(pmM)}-01`, false),
+      prevEnd: makeIstDate(`${pmY}-${pad2(pmM)}-${pad2(pmLastDay)}`, true),
+      days: Math.max(1, curD),
+      subtitle: start.toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: IST_TZ }),
+      summaryTitle: 'Monthly Automated Summary',
+      prevLabel: 'vs Previous Month',
+    };
+  }, [period, customFrom, customTo]);
 
   // Transactions inside the active period
   const periodTransactions = useMemo(() => {
@@ -291,22 +578,70 @@ export default function AnalyticsPage() {
     });
   }, [transactions, periodWindow]);
 
-  // 2. Top KPIs
+  // Transactions inside the comparison previous period
+  const prevPeriodTransactions = useMemo(() => {
+    const startMs = periodWindow.prevStart.getTime();
+    const endMs = periodWindow.prevEnd.getTime();
+    return transactions.filter((tx) => {
+      const t = new Date(tx.transaction_date).getTime();
+      return t >= startMs && t <= endMs;
+    });
+  }, [transactions, periodWindow]);
+
+  // 2. Top KPIs + Refunds/Cashback + Automated Summary metrics (matching Android FinanceAnalyticsEngine)
   const kpis = useMemo(() => {
     let totalIn = 0;
-    let totalOut = 0;
+    let grossOut = 0;
+    let refundsTotal = 0;
+    let cashbackTotal = 0;
+    let highestExpense: Transaction | null = null;
+    let validTxCount = 0;
 
     for (const tx of periodTransactions) {
-      if (isExcludedTransaction(tx)) continue;
+      if (tx.transaction_status === 'FAILED' || tx.duplicate_status === 'EXACT_DUPLICATE') continue;
       const amt = Number(tx.amount) || 0;
+      if (isRefundTx(tx)) {
+        refundsTotal += amt;
+        continue;
+      }
+      if (isExcludedTransaction(tx)) continue;
+
+      validTxCount += 1;
       if (tx.direction === 'CREDIT') {
-        totalIn += amt;
+        if (isCashbackTx(tx)) {
+          cashbackTotal += amt;
+        } else {
+          totalIn += amt;
+        }
       } else {
-        totalOut += amt;
+        grossOut += amt;
+        if (!highestExpense || amt > Number(highestExpense.amount)) {
+          highestExpense = tx;
+        }
       }
     }
+    let totalOut = Math.max(0, grossOut - refundsTotal);
 
-    // Fall back to /api/stats summary for THIS_MONTH if needed when total transactions > 1000
+    // Previous period comparison
+    let prevIn = 0;
+    let prevGrossOut = 0;
+    let prevRefunds = 0;
+    for (const tx of prevPeriodTransactions) {
+      if (tx.transaction_status === 'FAILED' || tx.duplicate_status === 'EXACT_DUPLICATE') continue;
+      const amt = Number(tx.amount) || 0;
+      if (isRefundTx(tx)) {
+        prevRefunds += amt;
+        continue;
+      }
+      if (isExcludedTransaction(tx)) continue;
+      if (tx.direction === 'CREDIT') {
+        if (!isCashbackTx(tx)) prevIn += amt;
+      } else {
+        prevGrossOut += amt;
+      }
+    }
+    const prevOut = Math.max(0, prevGrossOut - prevRefunds);
+
     if (period === 'THIS_MONTH' && statsSummary && periodTransactions.length === 0) {
       totalIn = statsSummary.monthly_income;
       totalOut = statsSummary.monthly_expense;
@@ -316,56 +651,101 @@ export default function AnalyticsPage() {
     const savingsRate = totalIn > 0 ? Math.round((net / totalIn) * 1000) / 10 : 0;
     const avgDailySpend = Math.round(totalOut / periodWindow.days);
 
-    return { totalIn, totalOut, savingsRate, avgDailySpend };
-  }, [periodTransactions, period, statsSummary, periodWindow.days]);
+    const expenseChangeVsPrevPct =
+      prevOut > 0 ? Math.round(((totalOut - prevOut) / prevOut) * 1000) / 10 : null;
+    const incomeChangeVsPrevPct =
+      prevIn > 0 ? Math.round(((totalIn - prevIn) / prevIn) * 1000) / 10 : null;
 
-  // 3. Trend chart data
+    return {
+      totalIn,
+      totalOut,
+      net,
+      savingsRate,
+      avgDailySpend,
+      refundsTotal,
+      cashbackTotal,
+      highestExpense,
+      validTxCount,
+      prevIn,
+      prevOut,
+      expenseChangeVsPrevPct,
+      incomeChangeVsPrevPct,
+    };
+  }, [periodTransactions, prevPeriodTransactions, period, statsSummary, periodWindow.days]);
+
+  // 3. Trend chart data (adapts to selected FRD period)
   const trendData = useMemo(() => {
     const valid = periodTransactions.filter((tx) => !isExcludedTransaction(tx));
 
-    if (period === 'LAST_3_MONTHS') {
-      const now = new Date();
-      const buckets: Array<{ key: string; label: string; income: number; expense: number }> = [];
-      for (let i = 2; i >= 0; i--) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-        buckets.push({
-          key,
-          label: d.toLocaleString('en-IN', { month: 'short' }),
-          income: 0,
-          expense: 0,
-        });
+    // Financial Year or Custom > 45 days -> Monthly buckets
+    if (period === 'FINANCIAL_YEAR' || (period === 'CUSTOM' && periodWindow.days > 45)) {
+      if (valid.length === 0) {
+        return period === 'FINANCIAL_YEAR' && statsCashFlow.length > 0
+          ? statsCashFlow.map((c) => ({ label: c.month, income: c.income, expense: c.expense }))
+          : [];
       }
-
-      const map = new Map(buckets.map((b) => [b.key, b]));
+      const monthBuckets = new Map<string, { label: string; income: number; expense: number }>();
       for (const tx of valid) {
-        const d = new Date(tx.transaction_date);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-        const bucket = map.get(key);
-        if (!bucket) continue;
+        const dKey = toIstDateKey(new Date(tx.transaction_date));
+        const mKey = dKey.slice(0, 7);
+        if (!monthBuckets.has(mKey)) {
+          const [y, m] = mKey.split('-').map(Number);
+          const label = new Date(Date.UTC(y, m - 1, 15)).toLocaleString('en-IN', {
+            month: 'short',
+            year: '2-digit',
+            timeZone: IST_TZ,
+          });
+          monthBuckets.set(mKey, { label, income: 0, expense: 0 });
+        }
+        const b = monthBuckets.get(mKey)!;
         const amt = Number(tx.amount) || 0;
-        if (tx.direction === 'CREDIT') bucket.income += amt;
-        else bucket.expense += amt;
+        if (tx.direction === 'CREDIT') {
+          if (!isCashbackTx(tx)) b.income += amt;
+        } else {
+          b.expense += amt;
+        }
       }
-
-      const hasAny = buckets.some((b) => b.income > 0 || b.expense > 0);
-      if (!hasAny && statsCashFlow.length > 0) {
-        return statsCashFlow.slice(-3).map((c) => ({
-          label: c.month,
-          income: c.income,
-          expense: c.expense,
+      return Array.from(monthBuckets.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([, v]) => ({
+          label: v.label,
+          income: Math.round(v.income),
+          expense: Math.round(v.expense),
         }));
-      }
-      return hasAny
-        ? buckets.map((b) => ({
-            label: b.label,
-            income: Math.round(b.income),
-            expense: Math.round(b.expense),
-          }))
-        : [];
     }
 
-    // Weekly buckets for This Month / Last Month
+    // Today / Yesterday / This Week / Custom <= 14 days -> Daily buckets
+    if (period === 'TODAY' || period === 'YESTERDAY' || period === 'THIS_WEEK' || (period === 'CUSTOM' && periodWindow.days <= 14)) {
+      if (valid.length === 0) return [];
+      const dayBuckets = new Map<string, { label: string; income: number; expense: number }>();
+      for (const tx of valid) {
+        const dKey = toIstDateKey(new Date(tx.transaction_date));
+        if (!dayBuckets.has(dKey)) {
+          const label = makeIstDate(dKey, false).toLocaleDateString('en-IN', {
+            day: 'numeric',
+            month: 'short',
+            timeZone: IST_TZ,
+          });
+          dayBuckets.set(dKey, { label, income: 0, expense: 0 });
+        }
+        const b = dayBuckets.get(dKey)!;
+        const amt = Number(tx.amount) || 0;
+        if (tx.direction === 'CREDIT') {
+          if (!isCashbackTx(tx)) b.income += amt;
+        } else {
+          b.expense += amt;
+        }
+      }
+      return Array.from(dayBuckets.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([, v]) => ({
+          label: v.label,
+          income: Math.round(v.income),
+          expense: Math.round(v.expense),
+        }));
+    }
+
+    // Weekly buckets for This Month / Previous Month / Custom 15-45 days
     if (valid.length === 0) return [];
     const weeks = [
       { label: 'Days 1-7', income: 0, expense: 0 },
@@ -376,11 +756,14 @@ export default function AnalyticsPage() {
     ];
 
     for (const tx of valid) {
-      const day = new Date(tx.transaction_date).getDate();
+      const day = Number(toIstDateKey(new Date(tx.transaction_date)).slice(8, 10));
       const idx = Math.min(4, Math.floor((day - 1) / 7));
       const amt = Number(tx.amount) || 0;
-      if (tx.direction === 'CREDIT') weeks[idx].income += amt;
-      else weeks[idx].expense += amt;
+      if (tx.direction === 'CREDIT') {
+        if (!isCashbackTx(tx)) weeks[idx].income += amt;
+      } else {
+        weeks[idx].expense += amt;
+      }
     }
 
     return weeks
@@ -390,25 +773,42 @@ export default function AnalyticsPage() {
         income: Math.round(w.income),
         expense: Math.round(w.expense),
       }));
-  }, [periodTransactions, period, statsCashFlow]);
+  }, [periodTransactions, period, periodWindow.days, statsCashFlow]);
 
-  // 4. Category Breakdown for selected period
+  // 4. Category Breakdown for selected period (net of refunds, matching Android)
   const categoryData = useMemo(() => {
-    const totals: Record<string, { value: number; color: string }> = {};
+    const totals: Record<string, { value: number; count: number; color: string }> = {};
+    const refundsByCat: Record<string, number> = {};
+    const txById = new Map<string, Transaction>();
+    for (const t of transactions) txById.set(t.id, t);
+
     for (const tx of periodTransactions) {
+      if (tx.transaction_status === 'FAILED' || tx.duplicate_status === 'EXACT_DUPLICATE') continue;
+      if (isRefundTx(tx)) {
+        const orig = tx.linked_transaction_id ? txById.get(tx.linked_transaction_id) : undefined;
+        const rCat = orig?.categories?.name || tx.categories?.name || 'Uncategorized';
+        refundsByCat[rCat] = (refundsByCat[rCat] || 0) + (Number(tx.amount) || 0);
+        continue;
+      }
       if (isExcludedTransaction(tx) || tx.direction !== 'DEBIT') continue;
       const name = tx.categories?.name || 'Uncategorized';
       const color = tx.categories?.color || '#94A3B8';
-      if (!totals[name]) totals[name] = { value: 0, color };
+      if (!totals[name]) totals[name] = { value: 0, count: 0, color };
       totals[name].value += Number(tx.amount) || 0;
+      totals[name].count += 1;
     }
 
     const entries = Object.entries(totals)
-      .map(([name, info], idx) => ({
-        name,
-        value: Math.round(info.value),
-        color: info.color || FALLBACK_COLORS[idx % FALLBACK_COLORS.length],
-      }))
+      .map(([name, info], idx) => {
+        const net = Math.max(0, info.value - (refundsByCat[name] || 0));
+        return {
+          name,
+          value: Math.round(net),
+          count: info.count,
+          color: info.color || FALLBACK_COLORS[idx % FALLBACK_COLORS.length],
+        };
+      })
+      .filter((e) => e.value > 0)
       .sort((a, b) => b.value - a.value);
 
     const total = entries.reduce((sum, c) => sum + c.value, 0);
@@ -419,9 +819,76 @@ export default function AnalyticsPage() {
         pct: total > 0 ? Math.round((e.value / total) * 100) : 0,
       })),
     };
-  }, [periodTransactions]);
+  }, [periodTransactions, transactions]);
 
-  // 5. Top Merchants list (grouped from /api/transactions)
+  // 5. Data-Driven Financial Insights (strictly derived from real DB records)
+  const insights = useMemo(() => {
+    const topCategory = categoryData.items[0] || null;
+
+    const mostFrequentCategory =
+      categoryData.items.length > 0
+        ? [...categoryData.items].sort((a, b) => b.count - a.count)[0]
+        : null;
+
+    // MoM spending change strictly from DB current month vs previous month
+    const curKey = toIstDateKey(new Date());
+    const curMonthKey = curKey.slice(0, 7);
+    const [curY, curM] = curKey.split('-').map(Number);
+    const pmDate = new Date(Date.UTC(curY, curM - 2, 1));
+    const prevMonthKey = `${pmDate.getUTCFullYear()}-${pad2(pmDate.getUTCMonth() + 1)}`;
+
+    let curMonthSpend = 0;
+    let prevMonthSpend = 0;
+    for (const tx of transactions) {
+      if (isExcludedTransaction(tx) || tx.direction !== 'DEBIT') continue;
+      const mKey = toIstDateKey(new Date(tx.transaction_date)).slice(0, 7);
+      const amt = Number(tx.amount) || 0;
+      if (mKey === curMonthKey) curMonthSpend += amt;
+      else if (mKey === prevMonthKey) prevMonthSpend += amt;
+    }
+
+    const momChangePct =
+      prevMonthSpend > 0
+        ? Math.round(((curMonthSpend - prevMonthSpend) / prevMonthSpend) * 1000) / 10
+        : statsSummary?.expense_change_pct ?? null;
+
+    let savingsHealthLabel = 'No Income Recorded';
+    let savingsHealthDetail = 'Income credits needed to calculate savings health.';
+    let savingsHealthTone: 'emerald' | 'blue' | 'amber' | 'rose' | 'slate' = 'slate';
+
+    if (kpis.totalIn > 0) {
+      if (kpis.savingsRate >= 30) {
+        savingsHealthLabel = 'Healthy Surplus';
+        savingsHealthDetail = `Retaining ${kpis.savingsRate}% of period income (${formatInr(kpis.net)} net).`;
+        savingsHealthTone = 'emerald';
+      } else if (kpis.savingsRate >= 10) {
+        savingsHealthLabel = 'Moderate Savings';
+        savingsHealthDetail = `Saving ${kpis.savingsRate}% of period income (${formatInr(kpis.net)} net).`;
+        savingsHealthTone = 'blue';
+      } else if (kpis.savingsRate >= 0) {
+        savingsHealthLabel = 'Tight Margin';
+        savingsHealthDetail = `Only ${kpis.savingsRate}% net surplus remaining in period.`;
+        savingsHealthTone = 'amber';
+      } else {
+        savingsHealthLabel = 'Spending Exceeds Income';
+        savingsHealthDetail = `Outflows exceed inflows by ${formatInr(Math.abs(kpis.net))}.`;
+        savingsHealthTone = 'rose';
+      }
+    }
+
+    return {
+      topCategory,
+      mostFrequentCategory,
+      curMonthSpend,
+      prevMonthSpend,
+      momChangePct,
+      savingsHealthLabel,
+      savingsHealthDetail,
+      savingsHealthTone,
+    };
+  }, [categoryData.items, transactions, statsSummary?.expense_change_pct, kpis]);
+
+  // 6. Top Merchants list (grouped from /api/transactions)
   const topMerchants = useMemo(() => {
     const map: Record<string, { name: string; total: number; count: number; lastDate: string }> = {};
     let grandTotal = 0;
@@ -458,7 +925,7 @@ export default function AnalyticsPage() {
       }));
   }, [periodTransactions]);
 
-  // 6. Account-wise breakdown
+  // 7. Account-wise breakdown
   const accountBreakdown = useMemo(() => {
     const flowByAccount: Record<string, { inflow: number; outflow: number; count: number }> = {};
 
@@ -487,33 +954,50 @@ export default function AnalyticsPage() {
     });
   }, [accounts, periodTransactions]);
 
+  const trendSubtitle =
+    period === 'FINANCIAL_YEAR' || (period === 'CUSTOM' && periodWindow.days > 45)
+      ? 'Monthly breakdown'
+      : period === 'TODAY' || period === 'YESTERDAY' || period === 'THIS_WEEK' || (period === 'CUSTOM' && periodWindow.days <= 14)
+      ? 'Daily breakdown'
+      : 'Weekly breakdown';
+
   return (
     <div className="flex flex-col min-h-screen">
       <Header onRefresh={fetchAnalytics} isRefreshing={isRefreshing} />
 
       <div className="p-4 sm:p-6 md:p-8 space-y-5 md:space-y-7 max-w-7xl mx-auto w-full">
-        {/* ── Header + Section 1: Period Selector Tabs ────────────────────── */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-              Financial Analytics
-            </h2>
-            <p className="text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
-              Live database insights • {periodWindow.subtitle}
-            </p>
+        {/* ── Header + Section 1: FRD 9.4 Period Selector Tabs ────────────── */}
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
+                  Financial Analytics
+                </h2>
+                {(isOffline || isCachedView) && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                    <WifiOff className="w-3 h-3" />
+                    Cached
+                  </span>
+                )}
+              </div>
+              <p className="text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
+                Verified database calculations • {periodWindow.subtitle}
+              </p>
+            </div>
           </div>
 
-          <div className="inline-flex items-center gap-1 p-1 bg-white/75 backdrop-blur-xl border border-white/60 rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.05)] self-start sm:self-auto">
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
             {PERIOD_TABS.map((tab) => {
               const active = period === tab.key;
               return (
                 <button
                   key={tab.key}
                   onClick={() => setPeriod(tab.key)}
-                  className={`min-h-[44px] px-3.5 sm:px-4 rounded-xl text-xs font-bold transition-all ${
+                  className={`min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all shrink-0 ${
                     active
                       ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm shadow-blue-500/25'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/60'
+                      : 'bg-white/75 border border-white/60 text-slate-600 hover:text-slate-900 hover:bg-white'
                   }`}
                 >
                   {tab.label}
@@ -521,6 +1005,33 @@ export default function AnalyticsPage() {
               );
             })}
           </div>
+
+          {period === 'CUSTOM' && (
+            <GlassCard className="p-3.5 flex flex-wrap items-center gap-3 bg-white/80">
+              <div className="flex items-center gap-2">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  From
+                </label>
+                <input
+                  type="date"
+                  value={customFrom}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 min-h-[40px]"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  To
+                </label>
+                <input
+                  type="date"
+                  value={customTo}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 min-h-[40px]"
+                />
+              </div>
+            </GlassCard>
+          )}
         </div>
 
         {/* Error State */}
@@ -558,7 +1069,6 @@ export default function AnalyticsPage() {
           </div>
         ) : (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-            {/* Total In */}
             <GlassCard className="p-4 sm:p-5 min-h-[100px]">
               <div className="flex items-center justify-between mb-2.5">
                 <span className="text-[11px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider">
@@ -572,11 +1082,10 @@ export default function AnalyticsPage() {
                 <AnimatedNumber value={kpis.totalIn} format={formatInr} />
               </div>
               <p className="text-[11px] text-slate-400 font-medium mt-1.5">
-                Credits in period
+                Excl. refunds &amp; transfers
               </p>
             </GlassCard>
 
-            {/* Total Out */}
             <GlassCard className="p-4 sm:p-5 min-h-[100px]">
               <div className="flex items-center justify-between mb-2.5">
                 <span className="text-[11px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider">
@@ -594,7 +1103,6 @@ export default function AnalyticsPage() {
               </p>
             </GlassCard>
 
-            {/* Savings Rate */}
             <GlassCard className="p-4 sm:p-5 min-h-[100px]">
               <div className="flex items-center justify-between mb-2.5">
                 <span className="text-[11px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider">
@@ -612,15 +1120,10 @@ export default function AnalyticsPage() {
                 {kpis.savingsRate}%
               </div>
               <p className="text-[11px] text-slate-400 font-medium mt-1.5 truncate">
-                {kpis.savingsRate >= 30
-                  ? 'Healthy surplus'
-                  : kpis.totalIn > 0
-                  ? 'Net saved vs income'
-                  : 'No income recorded'}
+                {insights.savingsHealthLabel}
               </p>
             </GlassCard>
 
-            {/* Avg Daily Spend */}
             <GlassCard className="p-4 sm:p-5 min-h-[100px]">
               <div className="flex items-center justify-between mb-2.5">
                 <span className="text-[11px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider">
@@ -636,6 +1139,227 @@ export default function AnalyticsPage() {
               <p className="text-[11px] text-slate-400 font-medium mt-1.5">
                 Over {periodWindow.days} {periodWindow.days === 1 ? 'day' : 'days'}
               </p>
+            </GlassCard>
+          </div>
+        )}
+
+        {/* ── Automated Financial Summary & Data-Driven Insights (FRD 11 & 12) ── */}
+        {!loading && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 md:gap-6">
+            {/* Automated Financial Summary Card */}
+            <GlassCard className="lg:col-span-6 p-5 sm:p-6 bg-gradient-to-br from-white/85 via-blue-50/35 to-indigo-50/35 space-y-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shrink-0">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                      {periodWindow.summaryTitle}
+                    </h3>
+                    <p className="text-[11px] text-slate-500 font-medium">
+                      {kpis.validTxCount} counted txns • Refunds ({formatInr(kpis.refundsTotal)}) &amp; Cashback ({formatInr(kpis.cashbackTotal)}) separated
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Highest Expense Record */}
+                <div className="p-3.5 rounded-2xl bg-white/85 border border-slate-200/70">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                    <Receipt className="w-3 h-3" />
+                    Highest Expense
+                  </p>
+                  {kpis.highestExpense ? (
+                    <div className="mt-1.5">
+                      <p className="text-base font-bold font-mono text-rose-600">
+                        {formatInr(Number(kpis.highestExpense.amount))}
+                      </p>
+                      <p className="text-xs font-semibold text-slate-800 truncate mt-0.5">
+                        {kpis.highestExpense.merchant || 'Expense'}
+                      </p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        {kpis.highestExpense.categories?.name || 'Uncategorized'} •{' '}
+                        {new Date(kpis.highestExpense.transaction_date).toLocaleDateString('en-IN', {
+                          day: 'numeric',
+                          month: 'short',
+                        })}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs font-medium text-slate-500 mt-2">
+                      No expenses recorded in period
+                    </p>
+                  )}
+                </div>
+
+                {/* Comparison vs Previous Period */}
+                <div className="p-3.5 rounded-2xl bg-white/85 border border-slate-200/70">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Spend {periodWindow.prevLabel}
+                  </p>
+                  {kpis.expenseChangeVsPrevPct !== null ? (
+                    <div className="mt-1.5">
+                      <p
+                        className={`text-base font-bold font-mono flex items-center gap-1 ${
+                          kpis.expenseChangeVsPrevPct > 0 ? 'text-rose-600' : 'text-emerald-600'
+                        }`}
+                      >
+                        {kpis.expenseChangeVsPrevPct > 0 ? (
+                          <ArrowUpRight className="w-4 h-4" />
+                        ) : (
+                          <ArrowDownRight className="w-4 h-4" />
+                        )}
+                        {kpis.expenseChangeVsPrevPct > 0 ? '+' : ''}
+                        {kpis.expenseChangeVsPrevPct}%
+                      </p>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Prior: <span className="font-mono font-semibold">{formatInr(kpis.prevOut)}</span>
+                      </p>
+                      {kpis.incomeChangeVsPrevPct !== null && (
+                        <p className="text-[10px] text-slate-400 mt-0.5">
+                          Income {kpis.incomeChangeVsPrevPct > 0 ? '+' : ''}
+                          {kpis.incomeChangeVsPrevPct}% ({formatInr(kpis.prevIn)})
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs font-medium text-slate-500 mt-2">
+                      No prior period expenses to compare
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Top Categories Mini Strip */}
+              {categoryData.items.length > 0 && (
+                <div className="pt-2 border-t border-slate-200/60 flex flex-wrap gap-2">
+                  {categoryData.items.slice(0, 3).map((cat) => (
+                    <span
+                      key={cat.name}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-white border border-slate-200/80 text-slate-700"
+                    >
+                      <span
+                        className="w-2 h-2 rounded-full"
+                        style={{ backgroundColor: cat.color }}
+                      />
+                      <span>{cat.name}:</span>
+                      <span className="font-mono font-bold">{formatInr(cat.value)}</span>
+                      <span className="text-slate-400">({cat.pct}%)</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </GlassCard>
+
+            {/* Data-Driven Financial Insights Card */}
+            <GlassCard className="lg:col-span-6 p-5 sm:p-6 space-y-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                  <Lightbulb className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                    Data-Driven Financial Insights
+                  </h3>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    Computed strictly from verified database transactions
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="p-3.5 rounded-2xl bg-slate-50/80 border border-slate-200/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Highest Spending Category
+                  </p>
+                  {insights.topCategory ? (
+                    <div className="mt-1">
+                      <p className="text-sm font-bold text-slate-900 truncate">
+                        {insights.topCategory.name}
+                      </p>
+                      <p className="text-xs font-mono font-bold text-rose-600 mt-0.5">
+                        {formatInr(insights.topCategory.value)} ({insights.topCategory.pct}% of spend)
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 mt-1">No category spend in period</p>
+                  )}
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-slate-50/80 border border-slate-200/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    MoM Spending Change
+                  </p>
+                  {insights.momChangePct !== null ? (
+                    <div className="mt-1">
+                      <p
+                        className={`text-sm font-bold font-mono ${
+                          insights.momChangePct > 0 ? 'text-rose-600' : 'text-emerald-600'
+                        }`}
+                      >
+                        {insights.momChangePct > 0 ? '+' : ''}
+                        {insights.momChangePct}% vs last month
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 font-mono">
+                        {formatInr(insights.curMonthSpend)} vs {formatInr(insights.prevMonthSpend)}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 mt-1">
+                      Needs previous month data for MoM delta
+                    </p>
+                  )}
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-slate-50/80 border border-slate-200/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Savings Rate Health
+                  </p>
+                  <p
+                    className={`text-sm font-bold mt-1 ${
+                      insights.savingsHealthTone === 'emerald'
+                        ? 'text-emerald-700'
+                        : insights.savingsHealthTone === 'blue'
+                        ? 'text-blue-700'
+                        : insights.savingsHealthTone === 'amber'
+                        ? 'text-amber-700'
+                        : insights.savingsHealthTone === 'rose'
+                        ? 'text-rose-600'
+                        : 'text-slate-600'
+                    }`}
+                  >
+                    {insights.savingsHealthLabel}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    {insights.savingsHealthDetail}
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-slate-50/80 border border-slate-200/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                    <Repeat className="w-3 h-3" />
+                    Most Frequent Category
+                  </p>
+                  {insights.mostFrequentCategory ? (
+                    <div className="mt-1">
+                      <p className="text-sm font-bold text-slate-900 truncate">
+                        {insights.mostFrequentCategory.name}
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        {insights.mostFrequentCategory.count}{' '}
+                        {insights.mostFrequentCategory.count === 1 ? 'transaction' : 'transactions'} •{' '}
+                        <span className="font-mono font-semibold">
+                          {formatInr(insights.mostFrequentCategory.value)}
+                        </span>
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 mt-1">No transactions in period</p>
+                  )}
+                </div>
+              </div>
             </GlassCard>
           </div>
         )}
@@ -678,7 +1402,7 @@ export default function AnalyticsPage() {
             <EmptyState
               icon={BarChart3}
               title="No Daily Activity Yet"
-              description="Sync bank SMS or record transactions to populate your 14-day daily cash flow chart."
+              description="Sync bank SMS to populate your 14-day daily cash flow chart."
               className="h-[220px] !py-6 !shadow-none border border-dashed border-slate-200/80 bg-slate-50/40"
             />
           ) : (
@@ -719,7 +1443,7 @@ export default function AnalyticsPage() {
                   Income vs Expense Trend
                 </h3>
                 <p className="text-[11px] sm:text-xs text-slate-500 font-medium mt-0.5">
-                  {period === 'LAST_3_MONTHS' ? 'Monthly breakdown' : 'Weekly breakdown'} ({periodWindow.subtitle})
+                  {trendSubtitle} ({periodWindow.subtitle})
                 </p>
               </div>
               {trendData.length > 0 && !loading && (
@@ -960,7 +1684,7 @@ export default function AnalyticsPage() {
                   Account-Wise Breakdown
                 </h3>
                 <p className="text-[11px] sm:text-xs text-slate-500 font-medium mt-0.5">
-                  Balance & period cash flow per account
+                  Balance &amp; period cash flow per account
                 </p>
               </div>
               <Link
@@ -991,7 +1715,7 @@ export default function AnalyticsPage() {
               <EmptyState
                 icon={CreditCard}
                 title="No Accounts Found"
-                description="Add a bank account or credit card to see account-level analytics."
+                description="Add a bank account or sync bank SMS to see account-level analytics."
                 className="flex-1 !py-8 !shadow-none border border-dashed border-slate-200/80 bg-slate-50/40"
               />
             ) : (
@@ -1096,7 +1820,8 @@ export default function AnalyticsPage() {
                       <div className="min-w-0">
                         <p className="text-sm font-bold text-slate-900 truncate">{bank.bank_name}</p>
                         <p className="text-[11px] text-slate-500">
-                          {bank.account_count} {bank.account_count === 1 ? 'account' : 'accounts'} • {bank.tx_count} txns
+                          {bank.account_count} {bank.account_count === 1 ? 'account' : 'accounts'} •{' '}
+                          {bank.tx_count} txns
                         </p>
                       </div>
                     </div>

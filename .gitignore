@@ -14,7 +14,9 @@ web/.next
 /out/
 
 # Production
-/build
+build/
+**/build/
+*.tsbuildinfo
 
 # Misc
 .DS_Store
@@ -34,16 +36,16 @@ supabase/backups/
 # Android
 *.iml
 .gradle
+**/.gradle/
 /local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
+/.idea/
+.idea/
+*.DS_Store
+captures/
 .externalNativeBuild
 .cxx
 local.properties
+*.jks
+*.keystore
+keystore.properties
+*.apk

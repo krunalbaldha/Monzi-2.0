@@ -3,187 +3,263 @@ package com.krunal.monzi
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
-import androidx.work.Data
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import androidx.work.WorkRequest
 import androidx.work.WorkerParameters
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
+import com.krunal.monzi.data.ApiResult
+import com.krunal.monzi.data.AuthSessionManager
+import com.krunal.monzi.data.MonziRepository
+import com.krunal.monzi.data.SupabaseApiClient
+import com.krunal.monzi.data.SyncQueueItemEntity
+import com.krunal.monzi.data.TransactionEntity
+import java.util.concurrent.TimeUnit
 
 class SyncWorker(appContext: Context, workerParams: WorkerParameters) :
     CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
-        val prefs = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        val serverUrl = inputData.getString("server_url")
-            ?: prefs.getString("server_url", DEFAULT_SYNC_URL)
-            ?: DEFAULT_SYNC_URL
-        val syncToken = (inputData.getString("device_sync_token")
-            ?: prefs.getString("device_sync_token", "")
-            ?: "").trim()
-        val accessToken = (inputData.getString("access_token")
-            ?: prefs.getString("access_token", "")
-            ?: "").trim()
-        val syncSecret = (inputData.getString("sync_secret")
-            ?: prefs.getString("sync_secret", "")
-            ?: "").trim()
-
-        if (syncToken.isEmpty() && accessToken.isEmpty()) {
-            Log.w("MonziSync", "Skipping sync: user not signed in / no sync token configured yet")
-            return Result.failure()
+        val db = LocalFinanceDbHelper.getInstance(applicationContext)
+        val sessionMgr = AuthSessionManager(applicationContext)
+        val initialBatch = db.getPendingTransactions(BATCH_SIZE)
+        val hasQueueWork = db.getActionableSyncQueueItems().isNotEmpty() ||
+            db.getPendingSyncAccounts().isNotEmpty() ||
+            sessionMgr.isPendingCloudReset()
+        if (initialBatch.isEmpty() && !hasQueueWork) {
+            return Result.success()
         }
 
-        val amount = inputData.getDouble("amount", 0.0)
-        if (amount <= 0.0) {
-            return Result.failure()
+        val api = SupabaseApiClient()
+        var syncToken = sessionMgr.getDeviceSyncToken().trim()
+        val accessToken = sessionMgr.getValidAccessToken(api)
+        val userId = sessionMgr.getUserId()
+
+        // Try fetching profile once if we have an active session but missing syncToken
+        if (syncToken.isEmpty() && !accessToken.isNullOrBlank() && userId.isNotBlank()) {
+            val profileRes = api.fetchOrProvisionProfile(accessToken, userId, sessionMgr.getSession()?.email.orEmpty())
+            if (profileRes is ApiResult.Success) {
+                sessionMgr.saveProfile(profileRes.data)
+                syncToken = profileRes.data.deviceSyncToken.trim()
+            }
         }
 
-        val direction = inputData.getString("direction") ?: "DEBIT"
-        val bankName = inputData.getString("bank_name") ?: "Bank"
-        val accountMask = inputData.getString("account_mask") ?: "XX0000"
-        val merchant = inputData.getString("merchant")
-        val referenceId = inputData.getString("reference_id")
-        val paymentMode = inputData.getString("payment_mode") ?: "UPI"
-        val transactionDateIso = inputData.getString("transaction_date_iso") ?: ""
-        val transactionType = inputData.getString("transaction_type") ?: ""
-        val isSelfTransfer = inputData.getBoolean("is_self_transfer", false)
-        val isRefund = inputData.getBoolean("is_refund", false)
-        val sender = inputData.getString("sender") ?: ""
-        val hasBalance = inputData.getBoolean("has_available_balance", false)
-        val availableBalance = inputData.getDouble("parsed_available_balance", 0.0)
+        if (syncToken.isEmpty() && accessToken.isNullOrBlank()) {
+            Log.w("MonziSync", "Deferring queue sync: user not signed in yet")
+            db.logAutomation(
+                processType = "QUEUE_SYNC",
+                processStatus = "DEFERRED",
+                errorCode = "NO_AUTH_TOKEN",
+                details = "${initialBatch.size} local transaction(s) / queued change(s) waiting for account sign-in"
+            )
+            return Result.success()
+        }
 
-        return try {
-            val jsonPayload = JSONObject().apply {
-                put("device_id", "android-${android.os.Build.MODEL}")
-                if (syncToken.isNotEmpty()) put("device_sync_token", syncToken)
-                if (syncSecret.isNotEmpty()) put("sync_secret", syncSecret)
+        var totalSynced = 0
+        var totalFailed = 0
+        var shouldRetry = false
+        var hadPriorRetries = false
 
-                val txnArray = JSONArray().apply {
-                    val txn = JSONObject().apply {
-                        if (transactionDateIso.isNotEmpty()) {
-                            put("transaction_date", transactionDateIso)
-                        }
-                        put("amount", amount)
-                        put("direction", direction)
-                        put("bank_name", bankName)
-                        put("account_mask", accountMask)
-                        if (!merchant.isNullOrBlank()) put("merchant", merchant)
-                        if (!referenceId.isNullOrBlank()) put("reference_id", referenceId)
-                        put("payment_mode", paymentMode)
-                        if (transactionType.isNotEmpty()) put("transaction_type", transactionType)
-                        if (isSelfTransfer) put("is_self_transfer", true)
-                        if (isRefund) put("is_refund", true)
-                        if (sender.isNotEmpty()) put("sender", sender)
-                        if (hasBalance) put("parsed_available_balance", availableBalance)
+        // When authenticated, flush pending reset, sync_queue (UPDATE/DELETE), accounts, categories, rules & txns.
+        if (!accessToken.isNullOrBlank()) {
+            val repo = MonziRepository(applicationContext)
+            totalSynced += repo.flushPendingNow()
+            if (sessionMgr.isPendingCloudReset() ||
+                db.getActionableSyncQueueItems().any { it.syncStatus == "RETRY" || it.syncStatus == "PENDING" }
+            ) {
+                shouldRetry = true
+            }
+        }
+
+        val deviceId = sessionMgr.getOrCreateDeviceIdentifier()
+        val categories = db.getCategories()
+        val categoryIdByName = categories.associate { it.name.lowercase() to it.id }
+
+        var batchNumber = 0
+        while (batchNumber < MAX_BATCHES_PER_RUN) {
+            val batch = db.getPendingTransactions(BATCH_SIZE)
+            if (batch.isEmpty()) break
+            if (!accessToken.isNullOrBlank() && syncToken.isEmpty()) break
+            batchNumber++
+
+            if (batch.any { it.retryCount > 0 || it.syncStatus != LocalFinanceDbHelper.STATUS_PENDING }) {
+                hadPriorRetries = true
+            }
+
+            for (row in batch) {
+                val resolvedCategoryId = resolveCategoryId(row, categoryIdByName)
+                val qId = "sync-txn-${row.localId}"
+                val nowAttempt = System.currentTimeMillis()
+                db.upsertSyncQueueItem(
+                    SyncQueueItemEntity(
+                        id = qId,
+                        entityType = "TRANSACTION",
+                        entityId = row.localId,
+                        operation = "UPSERT",
+                        payloadJson = "{\"amount\":${row.amount},\"type\":\"${row.transactionType}\"}",
+                        syncStatus = "PROCESSING",
+                        retryCount = row.retryCount,
+                        lastAttemptAtMs = nowAttempt,
+                        createdAtMs = row.createdAt
+                    )
+                )
+
+                val outcome = if (syncToken.isNotEmpty()) {
+                    api.deviceSyncIngestTransaction(
+                        syncToken = syncToken,
+                        deviceId = deviceId,
+                        record = row,
+                        categoryId = resolvedCategoryId
+                    )
+                } else {
+                    // Fallback to direct authenticated table insert when syncToken isn't set
+                    when (val res = api.insertManualTransaction(accessToken!!, row.copy(userId = userId, categoryId = resolvedCategoryId))) {
+                        is ApiResult.Success -> ApiResult.Success("PROCESSED")
+                        is ApiResult.Error -> res
                     }
-                    put(txn)
                 }
-                put("transactions", txnArray)
-            }
 
-            val url = URL(serverUrl)
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                setRequestProperty("Content-Type", "application/json")
-                if (syncToken.isNotEmpty()) {
-                    setRequestProperty("x-monzi-sync-token", syncToken)
-                }
-                if (accessToken.isNotEmpty()) {
-                    setRequestProperty("Authorization", "Bearer $accessToken")
-                }
-                if (syncSecret.isNotEmpty()) {
-                    setRequestProperty("x-monzi-secret", syncSecret)
-                }
-                doOutput = true
-                connectTimeout = 12000
-                readTimeout = 12000
-            }
-
-            OutputStreamWriter(conn.outputStream).use { writer ->
-                writer.write(jsonPayload.toString())
-                writer.flush()
-            }
-
-            val responseCode = conn.responseCode
-            when {
-                responseCode in 200..299 -> {
-                    Log.i("MonziSync", "Sync successful (HTTP $responseCode)")
-                    val syncedIntent = Intent(ACTION_SMS_SYNCED).apply {
-                        setPackage(applicationContext.packageName)
+                when (outcome) {
+                    is ApiResult.Success -> {
+                        db.markSyncStatus(row.localId, LocalFinanceDbHelper.STATUS_SYNCED, null)
+                        db.upsertSyncQueueItem(
+                            SyncQueueItemEntity(
+                                id = qId,
+                                entityType = "TRANSACTION",
+                                entityId = row.localId,
+                                operation = "UPSERT",
+                                payloadJson = "{\"amount\":${row.amount},\"type\":\"${row.transactionType}\"}",
+                                syncStatus = "SYNCED",
+                                retryCount = row.retryCount,
+                                lastError = null,
+                                lastAttemptAtMs = System.currentTimeMillis(),
+                                createdAtMs = row.createdAt
+                            )
+                        )
+                        totalSynced++
                     }
-                    applicationContext.sendBroadcast(syncedIntent)
-                    Result.success()
-                }
-                responseCode in 400..499 -> {
-                    Log.e("MonziSync", "Sync rejected with HTTP $responseCode")
-                    Result.failure()
-                }
-                else -> {
-                    Log.e("MonziSync", "Sync failed with HTTP $responseCode, scheduling retry")
-                    Result.retry()
+                    is ApiResult.Error -> {
+                        val isRetryable = outcome.code == 401 || outcome.code == 403 || outcome.code == 0 || outcome.code >= 500
+                        val nextStatus = if (isRetryable) LocalFinanceDbHelper.STATUS_RETRY_SCHEDULED else LocalFinanceDbHelper.STATUS_FAILED
+                        db.markSyncStatus(row.localId, nextStatus, "HTTP_${outcome.code}")
+                        db.upsertSyncQueueItem(
+                            SyncQueueItemEntity(
+                                id = qId,
+                                entityType = "TRANSACTION",
+                                entityId = row.localId,
+                                operation = "UPSERT",
+                                payloadJson = "{\"amount\":${row.amount},\"type\":\"${row.transactionType}\"}",
+                                syncStatus = if (isRetryable) "RETRY" else "FAILED",
+                                retryCount = row.retryCount + 1,
+                                lastError = outcome.message.take(160),
+                                lastAttemptAtMs = System.currentTimeMillis(),
+                                createdAtMs = row.createdAt
+                            )
+                        )
+                        totalFailed++
+                        if (isRetryable) shouldRetry = true
+                    }
                 }
             }
-        } catch (e: Exception) {
-            Log.e("MonziSync", "Network error during sync", e)
-            Result.retry()
+
+            if (shouldRetry) break
         }
+
+        if (totalSynced > 0) {
+            db.updateSyncState(lastSyncAt = System.currentTimeMillis())
+            db.logAutomation(
+                processType = "QUEUE_SYNC",
+                processStatus = "SYNCED",
+                details = "Synced $totalSynced transaction(s) directly to Supabase"
+            )
+            val syncedIntent = Intent(ACTION_SMS_SYNCED).apply {
+                setPackage(applicationContext.packageName)
+            }
+            applicationContext.sendBroadcast(syncedIntent)
+
+            if (hadPriorRetries || totalSynced >= 2 || totalFailed > 0) {
+                NotificationHelper.notifySyncSummary(applicationContext, totalSynced, totalFailed)
+            }
+        } else if (totalFailed > 0) {
+            db.logAutomation(
+                processType = "QUEUE_SYNC",
+                processStatus = if (shouldRetry) "RETRY_SCHEDULED" else "FAILED",
+                errorCode = "SYNC_PARTIAL_FAILURE",
+                details = "$totalFailed transaction(s) scheduled for retry"
+            )
+        }
+
+        return if (shouldRetry) Result.retry() else Result.success()
+    }
+
+    private fun resolveCategoryId(
+        row: TransactionEntity,
+        categoryIdByName: Map<String, String>
+    ): String? {
+        val currentId = row.categoryId
+        if (!currentId.isNullOrBlank() && !currentId.startsWith("local-cat-")) {
+            return currentId
+        }
+        val catName = row.categoryName?.lowercase()?.trim() ?: return null
+        return categoryIdByName[catName]
+            ?: categoryIdByName.entries.firstOrNull { it.key.contains(catName) || catName.contains(it.key) }?.value
     }
 
     companion object {
-        const val PREFS_NAME = "monzi_prefs"
-        const val DEFAULT_SYNC_URL = "https://ara20.vercel.app/api/sync"
+        const val PREFS_NAME = AuthSessionManager.PREFS_NAME
         const val ACTION_SMS_SYNCED = "com.krunal.monzi.SMS_SYNCED"
 
-        fun enqueueSync(context: Context, parsed: ParsedSms, sender: String = "") {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val serverUrl = prefs.getString("server_url", DEFAULT_SYNC_URL) ?: DEFAULT_SYNC_URL
-            val syncToken = prefs.getString("device_sync_token", "") ?: ""
-            val accessToken = prefs.getString("access_token", "") ?: ""
-            val syncSecret = prefs.getString("sync_secret", "") ?: ""
+        private const val BATCH_SIZE = 50
+        private const val MAX_BATCHES_PER_RUN = 10
+        private const val UNIQUE_FLUSH_WORK_NAME = "monzi_pending_flush"
+        private const val UNIQUE_PERIODIC_WORK_NAME = "monzi_periodic_retry_sweep"
 
-            val builder = Data.Builder()
-                .putString("server_url", serverUrl)
-                .putString("device_sync_token", syncToken)
-                .putString("access_token", accessToken)
-                .putString("sync_secret", syncSecret)
-                .putDouble("amount", parsed.amount)
-                .putString("direction", parsed.direction)
-                .putString("bank_name", parsed.bankName)
-                .putString("account_mask", parsed.accountMask)
-                .putString("merchant", parsed.merchant)
-                .putString("reference_id", parsed.referenceId)
-                .putString("payment_mode", parsed.paymentMode)
-                .putString("transaction_date_iso", parsed.transactionDateIso)
-                .putString("transaction_type", parsed.transactionType)
-                .putBoolean("is_self_transfer", parsed.isSelfTransfer)
-                .putBoolean("is_refund", parsed.isRefund)
-                .putString("sender", sender)
-                .putLong("timestamp", parsed.timestamp)
-
-            if (parsed.parsedAvailableBalance != null) {
-                builder.putBoolean("has_available_balance", true)
-                builder.putDouble("parsed_available_balance", parsed.parsedAvailableBalance)
-            } else {
-                builder.putBoolean("has_available_balance", false)
-            }
-
+        fun enqueuePendingFlush(context: Context) {
             val workRequest = OneTimeWorkRequestBuilder<SyncWorker>()
-                .setInputData(builder.build())
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)
                         .build()
                 )
+                .setBackoffCriteria(
+                    BackoffPolicy.EXPONENTIAL,
+                    WorkRequest.MIN_BACKOFF_MILLIS,
+                    TimeUnit.MILLISECONDS
+                )
                 .build()
 
-            WorkManager.getInstance(context).enqueue(workRequest)
+            WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+                UNIQUE_FLUSH_WORK_NAME,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                workRequest
+            )
+        }
+
+        fun schedulePeriodicRetry(context: Context) {
+            val periodicRequest = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .setBackoffCriteria(
+                    BackoffPolicy.EXPONENTIAL,
+                    WorkRequest.MIN_BACKOFF_MILLIS,
+                    TimeUnit.MILLISECONDS
+                )
+                .build()
+
+            WorkManager.getInstance(context.applicationContext).enqueueUniquePeriodicWork(
+                UNIQUE_PERIODIC_WORK_NAME,
+                ExistingPeriodicWorkPolicy.KEEP,
+                periodicRequest
+            )
         }
     }
 }

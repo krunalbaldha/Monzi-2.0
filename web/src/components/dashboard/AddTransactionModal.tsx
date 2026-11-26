@@ -80,6 +80,12 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
 
   if (!isOpen) return null;
 
+  const matchingCategories = React.useMemo(() => {
+    const wantIncome = direction === 'CREDIT';
+    const filtered = categories.filter((c) => Boolean(c.is_income) === wantIncome);
+    return filtered.length > 0 ? filtered : categories;
+  }, [categories, direction]);
+
   const selectedCategory = categories.find((c) => c.id === categoryId) || null;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -264,7 +270,7 @@ export function AddTransactionModal({ isOpen, onClose, onSuccess }: AddTransacti
                         <span className="w-2.5 h-2.5 rounded-full bg-slate-300" />
                         <span>Uncategorized</span>
                       </button>
-                      {categories.map((cat) => (
+                      {matchingCategories.map((cat) => (
                         <button
                           type="button"
                           key={cat.id}

@@ -5,6 +5,7 @@ import { GlassCard } from '@/components/ui/GlassCard';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { PieChart } from 'lucide-react';
+import { getCategoryVisual } from '@/lib/categoryVisuals';
 
 interface CategoryBreakdownProps {
   categories: Array<{ name: string; value: number; color: string }>;
@@ -66,14 +67,19 @@ export function CategoryBreakdown({ categories, loading = false }: CategoryBreak
         <div className="space-y-3.5 sm:space-y-4">
           {sorted.map((cat) => {
             const pct = total > 0 ? Math.round((cat.value / total) * 100) : 0;
+            const visual = getCategoryVisual(cat.name);
+            const IconComp = visual.icon;
+            const color = cat.color || visual.defaultColor;
             return (
               <div key={cat.name} className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span
-                      className="w-2.5 h-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: cat.color || '#6366F1' }}
-                    />
+                      className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0"
+                      style={{ backgroundColor: `${color}1A`, color }}
+                    >
+                      <IconComp className="w-3.5 h-3.5" />
+                    </span>
                     <span className="font-semibold text-slate-700 truncate">{cat.name}</span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
@@ -86,7 +92,7 @@ export function CategoryBreakdown({ categories, loading = false }: CategoryBreak
                     className="h-full rounded-full transition-all duration-700 ease-out"
                     style={{
                       width: `${Math.max(pct, 3)}%`,
-                      backgroundColor: cat.color || '#6366F1',
+                      backgroundColor: color,
                     }}
                   />
                 </div>

@@ -67,7 +67,10 @@ CREATE TABLE IF NOT EXISTS public.accounts (
     account_number_mask VARCHAR(10) NOT NULL,   -- e.g. 'XX1234'
     account_type account_type NOT NULL DEFAULT 'SAVINGS',
     initial_balance NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+    opening_balance NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
     current_balance NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+    balance_source VARCHAR(24) NOT NULL DEFAULT 'CALCULATED',
+    account_status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
     last_synced_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -108,8 +111,12 @@ CREATE TABLE IF NOT EXISTS public.transactions (
     linked_transaction_id UUID REFERENCES public.transactions(id) ON DELETE SET NULL, -- For refunds/transfers
 
     notes TEXT,
+    currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+    transaction_source VARCHAR(30) NOT NULL DEFAULT 'INCOMING_SMS',
+    transaction_status VARCHAR(20) NOT NULL DEFAULT 'COMPLETED',
     transaction_date TIMESTAMPTZ NOT NULL,      -- Original SMS date & time
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_transactions_user_fingerprint UNIQUE (user_id, sms_fingerprint)
 );
 
@@ -130,6 +137,66 @@ CREATE TABLE IF NOT EXISTS public.sms_processing_logs (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 7B. TRANSACTION RULES TABLE (User-defined categorization rules)
+CREATE TABLE IF NOT EXISTS public.transaction_rules (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    matching_rule VARCHAR(160) NOT NULL,
+    category_id UUID REFERENCES public.categories(id) ON DELETE CASCADE,
+    priority INTEGER NOT NULL DEFAULT 10,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 7C. DEVICES TABLE (Registered mobile / browser devices)
+CREATE TABLE IF NOT EXISTS public.devices (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    device_identifier VARCHAR(120) NOT NULL,
+    platform VARCHAR(30) NOT NULL,
+    app_version VARCHAR(30),
+    last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, device_identifier)
+);
+
+-- 7D. SMS SYNC STATE TABLE (Per-device historical scan & live monitoring state)
+CREATE TABLE IF NOT EXISTS public.sms_sync_state (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    device_id VARCHAR(120) NOT NULL,
+    historical_scan_status VARCHAR(24) DEFAULT 'PENDING',
+    last_processed_message TEXT,
+    last_processed_at TIMESTAMPTZ,
+    monitoring_status VARCHAR(24) DEFAULT 'INACTIVE',
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, device_id)
+);
+
+-- 7E. SYNC QUEUE TABLE (Resilient offline sync audit queue)
+CREATE TABLE IF NOT EXISTS public.sync_queue (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    local_transaction_id VARCHAR(120) NOT NULL,
+    transaction_payload JSONB NOT NULL,
+    sync_status VARCHAR(24) DEFAULT 'SYNCED',
+    retry_count INTEGER DEFAULT 0,
+    last_attempt_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 7F. AUTOMATION LOGS TABLE (Sync & automation diagnostic events)
+CREATE TABLE IF NOT EXISTS public.automation_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    device_id VARCHAR(120),
+    process_type VARCHAR(40) NOT NULL,
+    process_status VARCHAR(24) NOT NULL,
+    error_code VARCHAR(40),
+    details TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- 8. PERFORMANCE INDEXES
 CREATE INDEX IF NOT EXISTS idx_accounts_user ON public.accounts (user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON public.transactions (transaction_date DESC);
@@ -140,6 +207,11 @@ CREATE INDEX IF NOT EXISTS idx_transactions_type ON public.transactions (transac
 CREATE INDEX IF NOT EXISTS idx_transactions_category ON public.transactions (category_id);
 CREATE INDEX IF NOT EXISTS idx_webauthn_user ON public.webauthn_credentials (user_id);
 CREATE INDEX IF NOT EXISTS idx_sms_logs_user_date ON public.sms_processing_logs (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transaction_rules_user_priority ON public.transaction_rules (user_id, enabled, priority ASC);
+CREATE INDEX IF NOT EXISTS idx_devices_user_last_seen ON public.devices (user_id, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sms_sync_state_user_updated ON public.sms_sync_state (user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_queue_user_status ON public.sync_queue (user_id, sync_status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_automation_logs_user_date ON public.automation_logs (user_id, created_at DESC);
 
 -- 9. SYSTEM SETTINGS TABLE (Legacy / Authenticated config)
 CREATE TABLE IF NOT EXISTS public.app_settings (
@@ -167,6 +239,9 @@ $$;
 REVOKE ALL ON FUNCTION public.resolve_device_sync_user(TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.resolve_device_sync_user(TEXT) TO anon, authenticated, service_role;
 
+DROP FUNCTION IF EXISTS public.device_sync_ingest_transaction(TEXT, TEXT, TEXT, NUMERIC, transaction_direction, transaction_type, TEXT, TEXT, account_type, TEXT, TEXT, TEXT, TEXT, NUMERIC, BOOLEAN, TIMESTAMPTZ, UUID);
+DROP FUNCTION IF EXISTS public.device_sync_ingest_transaction(TEXT, TEXT, TEXT, NUMERIC, transaction_direction, transaction_type, TEXT, TEXT, account_type, TEXT, TEXT, TEXT, TEXT, NUMERIC, BOOLEAN, TIMESTAMPTZ, UUID, VARCHAR, VARCHAR, VARCHAR);
+
 CREATE OR REPLACE FUNCTION public.device_sync_ingest_transaction(
     p_sync_token TEXT,
     p_device_id TEXT,
@@ -184,7 +259,10 @@ CREATE OR REPLACE FUNCTION public.device_sync_ingest_transaction(
     p_parsed_available_balance NUMERIC,
     p_is_excluded_from_totals BOOLEAN,
     p_transaction_date TIMESTAMPTZ,
-    p_category_id UUID
+    p_category_id UUID,
+    p_transaction_source VARCHAR DEFAULT 'INCOMING_SMS',
+    p_transaction_status VARCHAR DEFAULT 'COMPLETED',
+    p_currency VARCHAR DEFAULT 'INR'
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -198,6 +276,11 @@ DECLARE
     v_cur_balance NUMERIC(14, 2);
     v_dup_id UUID;
     v_new_balance NUMERIC(14, 2);
+    v_balance_source VARCHAR(24);
+    v_device_key VARCHAR(120);
+    v_tx_source VARCHAR(30);
+    v_tx_status VARCHAR(20);
+    v_currency VARCHAR(10);
 BEGIN
     SELECT id INTO v_user_id
     FROM public.user_profiles
@@ -209,6 +292,12 @@ BEGIN
     IF v_user_id IS NULL THEN
         RETURN jsonb_build_object('status', 'UNAUTHORIZED', 'reason', 'Invalid device sync token');
     END IF;
+
+    v_device_key := COALESCE(NULLIF(trim(p_device_id), ''), 'android-device');
+    v_tx_source := COALESCE(NULLIF(trim(p_transaction_source), ''), 'INCOMING_SMS');
+    v_tx_status := COALESCE(NULLIF(trim(p_transaction_status), ''), 'COMPLETED');
+    v_currency := COALESCE(NULLIF(trim(p_currency), ''), 'INR');
+    v_balance_source := CASE WHEN p_parsed_available_balance IS NOT NULL THEN 'BANK_REPORTED' ELSE 'CALCULATED' END;
 
     SELECT id INTO v_dup_id
     FROM public.transactions
@@ -231,7 +320,7 @@ BEGIN
             extracted_type, extracted_amount, extracted_bank, extracted_date,
             reference_id, sms_fingerprint
         ) VALUES (
-            v_user_id, p_device_id, p_sender, 'DUPLICATE', 'Duplicate transaction detected',
+            v_user_id, v_device_key, p_sender, 'DUPLICATE', 'Duplicate transaction detected',
             p_transaction_type::TEXT, p_amount, p_bank_name, p_transaction_date,
             p_reference_id, p_sms_fingerprint
         );
@@ -258,6 +347,7 @@ BEGIN
 
             UPDATE public.accounts
             SET current_balance = v_new_balance,
+                balance_source = v_balance_source,
                 last_synced_at = p_transaction_date,
                 updated_at = NOW()
             WHERE id = v_account_id AND user_id = v_user_id;
@@ -265,10 +355,13 @@ BEGIN
     ELSE
         INSERT INTO public.accounts (
             user_id, bank_name, account_number_mask, account_type,
-            current_balance, last_synced_at
+            opening_balance, current_balance, balance_source, account_status, last_synced_at
         ) VALUES (
             v_user_id, p_bank_name, p_account_mask, COALESCE(p_account_type, 'SAVINGS'),
+            0.00,
             COALESCE(p_parsed_available_balance, CASE WHEN p_direction = 'CREDIT' THEN p_amount ELSE 0 END),
+            v_balance_source,
+            'ACTIVE',
             p_transaction_date
         )
         RETURNING id INTO v_account_id;
@@ -277,7 +370,8 @@ BEGIN
     INSERT INTO public.transactions (
         user_id, account_id, category_id, amount, direction, transaction_type,
         merchant, payment_mode, reference_id, sms_fingerprint,
-        parsed_available_balance, is_excluded_from_totals, transaction_date
+        parsed_available_balance, is_excluded_from_totals, transaction_date,
+        currency, transaction_source, transaction_status, updated_at
     ) VALUES (
         v_user_id, v_account_id, p_category_id, p_amount, p_direction, p_transaction_type,
         COALESCE(NULLIF(trim(p_merchant), ''), 'Bank Transaction'),
@@ -286,7 +380,11 @@ BEGIN
         p_sms_fingerprint,
         p_parsed_available_balance,
         COALESCE(p_is_excluded_from_totals, FALSE),
-        p_transaction_date
+        p_transaction_date,
+        v_currency,
+        v_tx_source,
+        v_tx_status,
+        NOW()
     );
 
     INSERT INTO public.sms_processing_logs (
@@ -294,17 +392,39 @@ BEGIN
         extracted_type, extracted_amount, extracted_bank, extracted_date,
         reference_id, sms_fingerprint
     ) VALUES (
-        v_user_id, p_device_id, p_sender, 'PROCESSED', 'Transaction extracted and synced',
+        v_user_id, v_device_key, p_sender, 'PROCESSED', 'Transaction extracted and synced',
         p_transaction_type::TEXT, p_amount, p_bank_name, p_transaction_date,
         p_reference_id, p_sms_fingerprint
+    );
+
+    INSERT INTO public.sms_sync_state (
+        user_id, device_id, historical_scan_status, last_processed_at, monitoring_status, updated_at
+    ) VALUES (
+        v_user_id,
+        v_device_key,
+        CASE WHEN v_tx_source = 'HISTORICAL_SMS' THEN 'IN_PROGRESS' ELSE 'PENDING' END,
+        NOW(),
+        'ACTIVE',
+        NOW()
+    )
+    ON CONFLICT (user_id, device_id) DO UPDATE SET
+        last_processed_at = NOW(),
+        monitoring_status = 'ACTIVE',
+        updated_at = NOW();
+
+    INSERT INTO public.automation_logs (
+        user_id, device_id, process_type, process_status, details
+    ) VALUES (
+        v_user_id, v_device_key, 'SMS_INGEST', 'SUCCESS',
+        format('Ingested %s %s transaction from %s', p_direction::TEXT, p_amount::TEXT, p_bank_name)
     );
 
     RETURN jsonb_build_object('status', 'PROCESSED', 'account_id', v_account_id);
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.device_sync_ingest_transaction(TEXT, TEXT, TEXT, NUMERIC, transaction_direction, transaction_type, TEXT, TEXT, account_type, TEXT, TEXT, TEXT, TEXT, NUMERIC, BOOLEAN, TIMESTAMPTZ, UUID) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.device_sync_ingest_transaction(TEXT, TEXT, TEXT, NUMERIC, transaction_direction, transaction_type, TEXT, TEXT, account_type, TEXT, TEXT, TEXT, TEXT, NUMERIC, BOOLEAN, TIMESTAMPTZ, UUID) TO anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION public.device_sync_ingest_transaction(TEXT, TEXT, TEXT, NUMERIC, transaction_direction, transaction_type, TEXT, TEXT, account_type, TEXT, TEXT, TEXT, TEXT, NUMERIC, BOOLEAN, TIMESTAMPTZ, UUID, VARCHAR, VARCHAR, VARCHAR) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.device_sync_ingest_transaction(TEXT, TEXT, TEXT, NUMERIC, transaction_direction, transaction_type, TEXT, TEXT, account_type, TEXT, TEXT, TEXT, TEXT, NUMERIC, BOOLEAN, TIMESTAMPTZ, UUID, VARCHAR, VARCHAR, VARCHAR) TO anon, authenticated, service_role;
 
 -- 11. AUTO-CREATE USER PROFILE TRIGGER ON AUTH SIGNUP
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -366,6 +486,11 @@ ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.webauthn_credentials ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sms_processing_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.transaction_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sms_sync_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sync_queue ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.automation_logs ENABLE ROW LEVEL SECURITY;
 
 -- Drop any legacy permissive policies
 DROP POLICY IF EXISTS "Allow all on accounts" ON public.accounts;
@@ -455,3 +580,75 @@ CREATE POLICY "Authenticated users can insert categories" ON public.categories
 DROP POLICY IF EXISTS "Authenticated users can read app_settings" ON public.app_settings;
 CREATE POLICY "Authenticated users can read app_settings" ON public.app_settings
     FOR SELECT TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Transaction Rules: strictly scoped to auth.uid() = user_id
+DROP POLICY IF EXISTS "Users can select own transaction rules" ON public.transaction_rules;
+DROP POLICY IF EXISTS "Users can insert own transaction rules" ON public.transaction_rules;
+DROP POLICY IF EXISTS "Users can update own transaction rules" ON public.transaction_rules;
+DROP POLICY IF EXISTS "Users can delete own transaction rules" ON public.transaction_rules;
+
+CREATE POLICY "Users can select own transaction rules" ON public.transaction_rules
+    FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users can insert own transaction rules" ON public.transaction_rules
+    FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can update own transaction rules" ON public.transaction_rules
+    FOR UPDATE TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can delete own transaction rules" ON public.transaction_rules
+    FOR DELETE TO authenticated USING (auth.uid() = user_id);
+
+-- Devices: strictly scoped to auth.uid() = user_id
+DROP POLICY IF EXISTS "Users can select own devices" ON public.devices;
+DROP POLICY IF EXISTS "Users can insert own devices" ON public.devices;
+DROP POLICY IF EXISTS "Users can update own devices" ON public.devices;
+DROP POLICY IF EXISTS "Users can delete own devices" ON public.devices;
+
+CREATE POLICY "Users can select own devices" ON public.devices
+    FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users can insert own devices" ON public.devices
+    FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can update own devices" ON public.devices
+    FOR UPDATE TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can delete own devices" ON public.devices
+    FOR DELETE TO authenticated USING (auth.uid() = user_id);
+
+-- SMS Sync State: strictly scoped to auth.uid() = user_id
+DROP POLICY IF EXISTS "Users can select own sms sync state" ON public.sms_sync_state;
+DROP POLICY IF EXISTS "Users can insert own sms sync state" ON public.sms_sync_state;
+DROP POLICY IF EXISTS "Users can update own sms sync state" ON public.sms_sync_state;
+DROP POLICY IF EXISTS "Users can delete own sms sync state" ON public.sms_sync_state;
+
+CREATE POLICY "Users can select own sms sync state" ON public.sms_sync_state
+    FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users can insert own sms sync state" ON public.sms_sync_state
+    FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can update own sms sync state" ON public.sms_sync_state
+    FOR UPDATE TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can delete own sms sync state" ON public.sms_sync_state
+    FOR DELETE TO authenticated USING (auth.uid() = user_id);
+
+-- Sync Queue: strictly scoped to auth.uid() = user_id
+DROP POLICY IF EXISTS "Users can select own sync queue" ON public.sync_queue;
+DROP POLICY IF EXISTS "Users can insert own sync queue" ON public.sync_queue;
+DROP POLICY IF EXISTS "Users can update own sync queue" ON public.sync_queue;
+DROP POLICY IF EXISTS "Users can delete own sync queue" ON public.sync_queue;
+
+CREATE POLICY "Users can select own sync queue" ON public.sync_queue
+    FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users can insert own sync queue" ON public.sync_queue
+    FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can update own sync queue" ON public.sync_queue
+    FOR UPDATE TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can delete own sync queue" ON public.sync_queue
+    FOR DELETE TO authenticated USING (auth.uid() = user_id);
+
+-- Automation Logs: strictly scoped to auth.uid() = user_id
+DROP POLICY IF EXISTS "Users can select own automation logs" ON public.automation_logs;
+DROP POLICY IF EXISTS "Users can insert own automation logs" ON public.automation_logs;
+DROP POLICY IF EXISTS "Users can delete own automation logs" ON public.automation_logs;
+
+CREATE POLICY "Users can select own automation logs" ON public.automation_logs
+    FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users can insert own automation logs" ON public.automation_logs
+    FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can delete own automation logs" ON public.automation_logs
+    FOR DELETE TO authenticated USING (auth.uid() = user_id);
